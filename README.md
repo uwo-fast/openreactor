@@ -1,6 +1,6 @@
-# Loafware
+# OpenReactor
 
-Loafware enables scientists and innovators to easily and reliably perform experiments and define processes using low-cost, self-made scientific equipment.
+OpenReactor monitors and controls lab-scale reactors from a web interface: it logs sensor readings, runs temperature, mixing and dosing control, and records experiments. It runs on a Raspberry Pi and talks to devices over I2C.
 
 ## Usage
 
@@ -20,8 +20,8 @@ sudo apt install -y git
 sudo apt install nodejs
 
 # Clone and enter repository
-git clone https://github.com/FEASTorg/loafware
-cd loafware
+git clone https://github.com/uwo-fast/openreactor.git
+cd openreactor
 
 # Run setup script
 ./first_time_setup.sh
