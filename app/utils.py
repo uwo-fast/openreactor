@@ -254,12 +254,12 @@ def applyControlChange(control: sensor.I2C):
     always when the control is disabled, so it is reset to its default output,
     and when enabled only if its plugin sets APPLY_ON_CHANGE. Closed-loop
     plugins are left to the experiment thread, which reads their inputs first.
+    The caller must hold 'dataLock'.
     """
     plugin = feedbackModules[control.name]
     if control.enabled and not getattr(plugin, "APPLY_ON_CHANGE", False):
         return
-    with dataLock:
-        applyControl(control)
+    applyControl(control)
 
 
 def experimentThread(
@@ -282,6 +282,8 @@ def experimentThread(
         global threadHandle
         global activeRead
         global running
+        if not running:
+            return  # stopped while this cycle was waiting for the lock
         activeRead = True
         threadStart = time.time()
         for d in dev:
@@ -342,20 +344,21 @@ def experimentThreadStop():
     running = False
     if not activeRead:
         threadHandle.cancel()
-        for i in range(len(I2C_con)):
-            # print('Reading :: {}'.format(c.name))
-            c = I2C_con[i]
-            try:
-                m = feedbackModules[c.name]
-                cfb = m.feedback(c.name, c)
-                out = cfb.reset()
-                c.controlMessage(out, cfb.outputType)
-                c.write()
-                c.store()
-            except:
-                print("Error with Reset of Control on Stop:: {}\n".format(c.name))
-                print(Exception)
-                traceback.print_exc()
+        with dataLock:
+            for i in range(len(I2C_con)):
+                # print('Reading :: {}'.format(c.name))
+                c = I2C_con[i]
+                try:
+                    m = feedbackModules[c.name]
+                    cfb = m.feedback(c.name, c)
+                    out = cfb.reset()
+                    c.controlMessage(out, cfb.outputType)
+                    c.write()
+                    c.store()
+                except:
+                    print("Error with Reset of Control on Stop:: {}\n".format(c.name))
+                    print(Exception)
+                    traceback.print_exc()
     if activeRead:
         time.sleep(0.1)
         experimentThreadStop()
