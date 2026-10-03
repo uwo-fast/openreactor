@@ -69,6 +69,7 @@ def mathParse(arr):
 
 def mathSolve(eq):
     while eq.count("*") > 0:
+        before = list(eq)
         iMult = (i for i, v in enumerate(eq) if v == "*")
         for v in iMult:
             if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
@@ -78,7 +79,10 @@ def mathSolve(eq):
                 eq[v - 1] = an
             elif eq[v + 1] == "(":
                 eq = handleBrackets(eq, v)
+        if eq == before:
+            raise ValueError("cannot parse equation")
     while eq.count("/") > 0:
+        before = list(eq)
         iMult = (i for i, v in enumerate(eq) if v == "/")
         for v in iMult:
             if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
@@ -90,8 +94,11 @@ def mathSolve(eq):
                 eq = handleBrackets(eq, v, reverse=True)
             elif eq[v + 1] == "(":
                 eq = handleBrackets(eq, v, reverse=False)
+        if eq == before:
+            raise ValueError("cannot parse equation")
 
     while eq.count("+") > 0:
+        before = list(eq)
         iMult = (i for i, v in enumerate(eq) if v == "+")
         for v in iMult:
             if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
@@ -101,7 +108,10 @@ def mathSolve(eq):
                 eq[v - 1] = an
             elif eq[v + 1] == "(":
                 eq = handleBrackets(eq, v)
+        if eq == before:
+            raise ValueError("cannot parse equation")
     while eq.count("-") > 0:
+        before = list(eq)
         iMult = (i for i, v in enumerate(eq) if v == "-")
         for v in iMult:
             if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
@@ -111,6 +121,8 @@ def mathSolve(eq):
                 eq[v - 1] = an
             elif eq[v + 1] == "(":
                 eq = handleBrackets(eq, v)
+        if eq == before:
+            raise ValueError("cannot parse equation")
     return eq
 
 
@@ -215,10 +227,10 @@ def clearBrackets(eq):
 
 
 def parse(string) -> var:
-    string = string.lower()
+    string = "".join(string.lower().split())
 
-    b = re.sub(r"(?<=[1-9])[\(]", "*(", string)  # replace implicit mult brackets
-    b = re.sub(r"(?<=[1-9])[x]", "*x", b)  # replace implicit mult x
+    b = re.sub(r"(?<=[0-9])[\(]", "*(", string)  # replace implicit mult brackets
+    b = re.sub(r"(?<=[0-9])[x]", "*x", b)  # replace implicit mult x
     b = re.split(r"([\*|\/|\+|\-|\(|\)])", b)
 
     b = [i for i in b if i]
