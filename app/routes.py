@@ -283,8 +283,9 @@ def resetControls():
     Resets the parameters of the control systems to default.
     """
     global I2C_connections
-    for con in I2C_connections:
-        con.reset_control()
+    with utils.dataLock:
+        for con in I2C_connections:
+            con.reset_control()
     ret = updateControls()
     return ("", 204)
 
@@ -302,12 +303,14 @@ def measure(side):
         one for sensors and one for controls.
     """
     if request.method == "POST":
+        # Hold dataLock so this cannot interleave with an experiment cycle
         if side == "sensor":
             sensor_measure = request.json
             for dev in I2C_dev:
                 if dev.name == sensor_measure:
-                    dev.read()
-                    dev.store(equations[dev.name])
+                    with utils.dataLock:
+                        dev.read()
+                        dev.store(equations[dev.name])
         elif side == "control":
             control_return = request.json
             control_name = control_return["name"]
@@ -316,14 +319,15 @@ def measure(side):
                 if control.name == control_name:
                     # What remains after removing name and enabled is the params
                     del control_return["name"]
-                    control.control_state(int(control_return["enabled"]))
-                    del control_return["enabled"]
-                    control.edit_params(control_return)
-                    try:
-                        utils.applyControlChange(control)
-                    except Exception:
-                        print("Error applying control :: {}".format(control.name))
-                        traceback.print_exc()
+                    with utils.dataLock:
+                        control.control_state(int(control_return["enabled"]))
+                        del control_return["enabled"]
+                        control.edit_params(control_return)
+                        try:
+                            utils.applyControlChange(control)
+                        except Exception:
+                            print("Error applying control :: {}".format(control.name))
+                            traceback.print_exc()
     return ("", 204)
 
 
