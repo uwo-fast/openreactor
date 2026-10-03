@@ -24,6 +24,7 @@ from database.model import (
     Data,
 )
 from experiments.experiments import experiment
+from sensors.maths.symbolicParser import parse
 import json
 import time
 import traceback
@@ -265,11 +266,20 @@ def calibrate():
 
     Returns
     -------
-    Empty response with status code 204.
+    Empty response with status code 204, or 400 if the equation does not
+    parse to a usable calibration (the stored equation is then unchanged).
     """
     if request.method == "POST":
         req = request.json
         print(req)
+        try:
+            eq = parse(req[1])
+            float(eq.apply(1.0))
+            valid = eq.name == "x" and eq.multiplier != 0
+        except Exception:
+            valid = False
+        if not valid:
+            return ("Invalid equation", 400)
         equations[req[0]] = req[1]
         eq = Path(os.path.join(basedir, "sensors", "maths", "equations.json"))
         with open(eq, "w") as f:

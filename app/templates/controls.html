@@ -143,14 +143,30 @@
                         dataType: 'json',
                         data: toSend,
                         success: function () {
+                            document.getElementById("eqError" + i + side).textContent = "";
                             b = document.getElementById("settingsModal" + i + side);
                             b.style.display = "none";
+                        },
+                        error: function () {
+                            document.getElementById("eqError" + i + side).textContent = "Invalid equation, not saved";
                         }
                     })
                 }
+                var cancelEquationButton = document.createElement('button');
+                cancelEquationButton.className = "btn btn-secondary btn-sm";
+                cancelEquationButton.innerHTML = "Cancel";
+                cancelEquationButton.onclick = function () {
+                    document.getElementById("eqError" + i + side).textContent = "";
+                    document.getElementById("settingsModal" + i + side).style.display = "none";
+                }
+                var eqError = document.createElement("div");
+                eqError.id = "eqError" + i + side;
+                eqError.style.color = "red";
                 modalBody.appendChild(d)
                 d.appendChild(eqText)
                 d.appendChild(setEquationButton)
+                d.appendChild(cancelEquationButton)
+                d.appendChild(eqError)
 
                 settingsModal.appendChild(modalBody)
 
