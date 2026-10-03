@@ -1,38 +1,16 @@
+import ast
+import math
 import re
 
 
 class var:
+    """A linear calibration: value = multiplier * x + offset."""
+
     def __init__(self, name, multiplier=1, offset=0, exponent=1):
         self.name = name
         self.multiplier = multiplier
         self.offset = offset
         self.exponent = exponent
-
-    def __add__(self, num):
-        self.offset += num
-        return self
-
-    __radd__ = __add__
-
-    def __sub__(self, num):
-        self.offset -= num
-        return self
-
-    __rsub__ = __sub__
-
-    def __mul__(self, num):
-        self.multiplier = self.multiplier * num
-        self.offset = self.offset * num
-        return self
-
-    __rmul__ = __mul__
-
-    def __truediv__(self, num):
-        self.multiplier = self.multiplier / num
-        self.offset = self.offset / num
-        return self
-
-    __rtruediv__ = __truediv__
 
     def equation(self):
         if self.offset >= 0:
@@ -48,192 +26,51 @@ class var:
             return [v * self.multiplier + self.offset for v in val]
 
 
-def checkFloat(string):
-    try:
-        float(string)
-        return True
-    except:
-        return False
-
-
-def mathParse(arr):
-    for i, statement in enumerate(arr):
-        if type(statement) == str:
-            if statement.isalpha():
-                statement = var(statement)
-            if checkFloat(statement):
-                statement = float(statement)
-        arr[i] = statement
-    return arr
-
-
-def mathSolve(eq):
-    while eq.count("*") > 0:
-        before = list(eq)
-        iMult = (i for i, v in enumerate(eq) if v == "*")
-        for v in iMult:
-            if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
-                an = genEq(eq[v - 1], eq[v], eq[v + 1])
-                eq.pop(v - 1)
-                eq.pop(v - 1)
-                eq[v - 1] = an
-            elif eq[v + 1] == "(":
-                eq = handleBrackets(eq, v)
-        if eq == before:
-            raise ValueError("cannot parse equation")
-    while eq.count("/") > 0:
-        before = list(eq)
-        iMult = (i for i, v in enumerate(eq) if v == "/")
-        for v in iMult:
-            if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
-                an = genEq(eq[v - 1], eq[v], eq[v + 1])
-                eq.pop(v - 1)
-                eq.pop(v - 1)
-                eq[v - 1] = an
-            elif eq[v - 1] == ")":
-                eq = handleBrackets(eq, v, reverse=True)
-            elif eq[v + 1] == "(":
-                eq = handleBrackets(eq, v, reverse=False)
-        if eq == before:
-            raise ValueError("cannot parse equation")
-
-    while eq.count("+") > 0:
-        before = list(eq)
-        iMult = (i for i, v in enumerate(eq) if v == "+")
-        for v in iMult:
-            if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
-                an = genEq(eq[v - 1], eq[v], eq[v + 1])
-                eq.pop(v - 1)
-                eq.pop(v - 1)
-                eq[v - 1] = an
-            elif eq[v + 1] == "(":
-                eq = handleBrackets(eq, v)
-        if eq == before:
-            raise ValueError("cannot parse equation")
-    while eq.count("-") > 0:
-        before = list(eq)
-        iMult = (i for i, v in enumerate(eq) if v == "-")
-        for v in iMult:
-            if type(eq[v - 1]) != str and type(eq[v + 1]) != str:
-                an = genEq(eq[v - 1], eq[v], eq[v + 1])
-                eq.pop(v - 1)
-                eq.pop(v - 1)
-                eq[v - 1] = an
-            elif eq[v + 1] == "(":
-                eq = handleBrackets(eq, v)
-        if eq == before:
-            raise ValueError("cannot parse equation")
-    return eq
-
-
-def genEq(val1, symbol, val2):
-    if symbol == "*":
-        ans = val1 * val2
-    elif symbol == "/":
-        ans = val1 / val2
-    elif symbol == "+":
-        ans = val1 + val2
-    elif symbol == "-":
-        ans = val1 - val2
-    return ans
-
-
-def handleBrackets(eq, v, reverse=False):
-    if not reverse:
-        o, k = findPar(eq, v + 1)
-    else:
-        o, k = rfindPar(eq, v - 1)
-
-    m = mapInner(eq[o:k])
-    uM = list(set(m))
-    uM.sort()
-    uM = uM[::-1]
-    for u in uM:
-        i = m.index(u)
-        i += o
-        k1, o1 = findPar(eq, i)
-        s = mathSolve(eq[k1 + 1 : o1])
-        rm = o1 - k1 + 1
-        for _ in range(rm):
-            eq.pop(k1)
-        for n in s[::-1]:
-            eq.insert(k1, n)
-        # eq[k1]=s[0]
-        if "(" in eq:
-            if not reverse:
-                o, k = findPar(eq, v + 1)
-            else:
-                o, k = rfindPar(eq, v - 1)
-            m = mapInner(eq[o:k])
-
-    return eq
-
-
-def findPar(L, j):
-
-    i = j
-    if L[i] == "(":
-        n = 1
-    else:
-        n = 0
-    while True:
-        j += 1
-        if L[j] == "(":
-            n += 1
-        elif L[j] == ")":
-            n -= 1
-
-        if not n > 0:
-            break
-    return i, j
-
-
-def rfindPar(L, j):
-    i = j
-    if L[i] == ")":
-        n = 1
-    else:
-        n = 0
-    while True:
-        j -= 1
-        if L[j] == ")":
-            n += 1
-        elif L[j] == "(":
-            n -= 1
-
-        if not n > 0:
-            break
-    return j, i
-
-
-def mapInner(L):
-    n = 0
-    m = [0] * len(L)
-    for i, v in enumerate(L):
-        if v == "(":
-            n += 1
-        elif v == ")":
-            n -= 1
-        m[i] = n
-    return m
-
-
-def clearBrackets(eq):
-    for i, c in enumerate(eq):
-        if eq[i] == "(" and eq[i + 2] == ")":
-            eq.pop(i)
-            eq.pop(i + 1)
-    return eq
+def _linear(node):
+    """Evaluate an expression node as (m, b), meaning m * x + b."""
+    if isinstance(node, ast.Expression):
+        return _linear(node.body)
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return 0.0, float(node.value)
+    if isinstance(node, ast.Name) and node.id == "x":
+        return 1.0, 0.0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        m, b = _linear(node.operand)
+        return (-m, -b) if isinstance(node.op, ast.USub) else (m, b)
+    if isinstance(node, ast.BinOp):
+        (m1, b1), (m2, b2) = _linear(node.left), _linear(node.right)
+        if isinstance(node.op, ast.Add):
+            return m1 + m2, b1 + b2
+        if isinstance(node.op, ast.Sub):
+            return m1 - m2, b1 - b2
+        if isinstance(node.op, ast.Mult) and m1 == 0:
+            return b1 * m2, b1 * b2
+        if isinstance(node.op, ast.Mult) and m2 == 0:
+            return m1 * b2, b1 * b2
+        if isinstance(node.op, ast.Div) and m2 == 0 and b2 != 0:
+            return m1 / b2, b1 / b2
+    raise ValueError("not a linear equation in x")
 
 
 def parse(string) -> var:
-    string = "".join(string.lower().split())
+    """
+    Parses a calibration equation such as "2x+1", "1.5(x-3)" or "-0.5x+7".
 
-    b = re.sub(r"(?<=[0-9])[\(]", "*(", string)  # replace implicit mult brackets
-    b = re.sub(r"(?<=[0-9])[x]", "*x", b)  # replace implicit mult x
-    b = re.split(r"([\*|\/|\+|\-|\(|\)])", b)
-
-    b = [i for i in b if i]
-    b = mathParse(b)
-    a = mathSolve(b)
-    return a[0]
+    Numbers, x, + - * /, unary minus and brackets are allowed, with
+    implicit multiplication (2x, 2(x+1), x(2), (x+1)2). Raises ValueError if
+    the equation is not linear in x.
+    """
+    s = "".join(string.lower().split())
+    # Short and arithmetic-only before ast.parse, which can crash on huge input
+    if len(s) > 100 or not re.fullmatch(r"[0-9x.e+\-*/()]+", s):
+        raise ValueError("cannot parse equation")
+    s = re.sub(r"(?<=[0-9.)x])(?=[x(])", "*", s)  # 2x, 2(, )(, x(, )x
+    s = re.sub(r"(?<=\))(?=[0-9.])", "*", s)  # )2
+    try:
+        tree = ast.parse(s, mode="eval")
+    except SyntaxError as e:
+        raise ValueError("cannot parse equation") from e
+    m, b = _linear(tree)
+    if not (math.isfinite(m) and math.isfinite(b)):
+        raise ValueError("equation is not finite")
+    return var("x", m, b)
