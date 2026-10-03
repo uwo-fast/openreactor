@@ -19,10 +19,8 @@ class connected:
         # Open devices.json file
         with open(os.path.join(basedir, "devices.json")) as file:
             full_dict = json.load(file)
-        dev_dict = full_dict["DEVICES"]
-        con_dict = full_dict["CONTROLS"]
-        self.dev = dev_dict
-        self.con = con_dict
+        self.dev = full_dict["DEVICES"]
+        self.con = full_dict["CONTROLS"]
 
         for dev in devices:
             addrs = dev
@@ -109,13 +107,13 @@ class connected:
                 print(f"Unknown device found with address: {addrs}")
 
     def find_dev(self, addr, search):
-        for dev in self.dev:
-            if dev["address"] == addr:
-                return dev.get(search, None)
+        for device in self.dev:
+            if device["address"] == addr:
+                return device.get(search, None)
         return None
 
     def find_con(self, addr, search):
-        for con in self.con:
-            if con["address"] == addr:
-                return con.get(search, None)
+        for control in self.con:
+            if control["address"] == addr:
+                return control.get(search, None)
         return None

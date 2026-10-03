@@ -4,7 +4,7 @@ from controls.pid import pid
 
 
 class feedback:
-    def __init__(self, name, I2C):
+    def __init__(self, name: str, I2C):
         self.data = 0
         self.params = {}
         self.name = name
