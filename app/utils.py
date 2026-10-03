@@ -263,7 +263,10 @@ def applyControlChange(control: sensor.I2C):
 
 
 def experimentThread(
-    cycle_length: int, dev: list[sensor.I2C], connections: list[sensor.I2C]
+    cycle_length: int,
+    dev: list[sensor.I2C],
+    connections: list[sensor.I2C],
+    generation: int = 0,
 ):
     """
     The function that is used to obtain measurements and run processes in a seperate thread as to not interupt connection.
@@ -282,8 +285,8 @@ def experimentThread(
         global threadHandle
         global activeRead
         global running
-        if not running:
-            return  # stopped while this cycle was waiting for the lock
+        if not running or generation != loopGeneration:
+            return  # stopped, or restarted, while this cycle waited for the lock
         activeRead = True
         threadStart = time.time()
         for d in dev:
@@ -325,7 +328,7 @@ def experimentThread(
         database.cycleSet(cycle_length)
         if running:
             threadHandle = threading.Timer(
-                newTime, experimentThread, (cycle_length, dev, connections)
+                newTime, experimentThread, (cycle_length, dev, connections, generation)
             )
             threadHandle.daemon = True
             threadHandle.start()
@@ -378,14 +381,19 @@ def experimentThreadStart(cycle_length, dev, con):
     """
     global threadHandle
     global running
-    running = True
+    global loopGeneration
+    with dataLock:
+        if running:
+            return  # already running: a second loop would double every cycle
+        running = True
+        loopGeneration += 1
 
-    print("Starting Threading with interval :: {}".format(cycle_length))
-    threadHandle = threading.Timer(
-        cycle_length, experimentThread, (cycle_length, dev, con)
-    )
-    threadHandle.daemon = True
-    threadHandle.start()
+        print("Starting Threading with interval :: {}".format(cycle_length))
+        threadHandle = threading.Timer(
+            cycle_length, experimentThread, (cycle_length, dev, con, loopGeneration)
+        )
+        threadHandle.daemon = True
+        threadHandle.start()
 
 
 # Initialize variables
@@ -400,6 +408,8 @@ devices = [dev.name for dev in Sensor.select()]
 controls = [con.name for con in Control.select()]
 
 activeRead = False
+running = False
+loopGeneration = 0  # bumped by each start; cycles from an older start exit
 # An unstarted timer, so experimentThreadStop() can cancel it before any start
 threadHandle = threading.Timer(0, lambda: None)
 dataLock = threading.Lock()
