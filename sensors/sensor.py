@@ -161,6 +161,7 @@ class I2C:
     def edit_params(self, new_params):
         """Used to edit the params of the control system."""
         self.params = new_params
+        self.time = datetime.datetime.now()
         self.store()
 
     def control_state(self, state):
@@ -172,6 +173,7 @@ class I2C:
         print(f"Resetting control {self.name} to default state.")
         self.enabled = self.def_state
         self.params = self.def_params
+        self.time = datetime.datetime.now()
         self.store()
 
     def print_value(self):
