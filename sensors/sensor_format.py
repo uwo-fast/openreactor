@@ -1,3 +1,4 @@
+import re
 import struct
 
 
@@ -28,9 +29,13 @@ def form(form, data):
             result -= 256.0
 
     elif form == "atlas":
-        result = list(map(lambda x: chr(x & ~0x80), list(data)))
-        result = result[1:5]
-        result = "".join(map(str, result))
+        # Byte 0 is the EZO status code, followed by the reading as ASCII.
+        # Take the leading number: it stops at the NUL terminator, and at the
+        # comma when a multi-output circuit (e.g. EC) sends several values,
+        # of which the first is the primary reading.
+        text = "".join(chr(x & ~0x80) for x in data[1:])
+        match = re.match(r"[-+]?[0-9.]+", text)
+        result = match.group() if match else ""
 
     elif form == "byte":
         result = struct.unpack("f", data)
