@@ -286,6 +286,11 @@ def resetControls():
     with utils.dataLock:
         for con in I2C_connections:
             con.reset_control()
+            try:
+                utils.applyControlChange(con)
+            except Exception:
+                print("Error applying control :: {}".format(con.name))
+                traceback.print_exc()
     ret = updateControls()
     return ("", 204)
 

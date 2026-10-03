@@ -400,7 +400,8 @@ devices = [dev.name for dev in Sensor.select()]
 controls = [con.name for con in Control.select()]
 
 activeRead = False
-threadHandle = threading.Thread()
+# An unstarted timer, so experimentThreadStop() can cancel it before any start
+threadHandle = threading.Timer(0, lambda: None)
 dataLock = threading.Lock()
 
 # Get cycle length from system settings or set default
