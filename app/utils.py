@@ -89,13 +89,13 @@ def innit_connected():
         array that the I2C objects are appended to
     """
     connected = ct()
-    I2C_dev = []
+    I2C_dev: list[sensor.I2C] = []
 
     equations = Path(basedir + "/sensors/maths/equations.json")
     equations.touch(exist_ok=True)
     f = open(equations)
     try:
-        j = json.load(f)
+        j: dict[str, str] = json.load(f)
     except:
         f.close()
         j = {}
@@ -142,12 +142,12 @@ def innit_control():
 
     """
     connected = ct()
-    I2C_con = []
+    I2C_con: list[sensor.I2C] = []
     for dev in connected.cons:
         global feedbackModules
         print(dev[1])
         feedbackModules[dev[1]] = importlib.import_module(dev[8][0]["control"])
-        con = sensor.I2C(
+        con: sensor.I2C = sensor.I2C(
             name=dev[1],
             units=dev[2],
             address=dev[0],
@@ -236,7 +236,35 @@ def experiment_entries(timeStart, timeEnd, name):
         return sensor, values, times
 
 
-def experimentThread(cycle_length, dev, con):
+def applyControl(control: sensor.I2C):
+    """
+    Runs the feedback plugin of a control and writes its output to the device.
+    The caller must hold 'dataLock', as the experiment thread uses the same bus.
+    """
+    plugin = feedbackModules[control.name]
+    cfb = plugin.feedback(control.name, control)
+    out = cfb.process() if control.enabled else cfb.reset()
+    control.controlMessage(out, cfb.outputType)
+    control.write()
+
+
+def applyControlChange(control: sensor.I2C):
+    """
+    Applies a change made in the interface straight away when that is safe:
+    always when the control is disabled, so it is reset to its default output,
+    and when enabled only if its plugin sets APPLY_ON_CHANGE. Closed-loop
+    plugins are left to the experiment thread, which reads their inputs first.
+    """
+    plugin = feedbackModules[control.name]
+    if control.enabled and not getattr(plugin, "APPLY_ON_CHANGE", False):
+        return
+    with dataLock:
+        applyControl(control)
+
+
+def experimentThread(
+    cycle_length: int, dev: list[sensor.I2C], connections: list[sensor.I2C]
+):
     """
     The function that is used to obtain measurements and run processes in a seperate thread as to not interupt connection.
     Measurements are obtained and formatted using the formatting code in 'sensors/sensor.py'
@@ -270,23 +298,13 @@ def experimentThread(cycle_length, dev, con):
                 # print("Relaunching Thread")
                 # experimentThreadStart(cycle_length,dev,con)
             # print('Stored :: {}'.format(d.name))
-        for i in range(len(con)):
-            # print('Reading :: {}'.format(c.name))
-            c = con[i]
+        for control in connections:
+            # print('Reading :: {}'.format(control.name))
             try:
-                m = feedbackModules[c.name]
-                cfb = m.feedback(c.name, c)
-                if c.enabled:
-                    out = cfb.process()
-                    c.controlMessage(out, cfb.outputType)
-                    c.write()
-                if not c.enabled:
-                    out = cfb.reset()
-                    c.controlMessage(out, cfb.outputType)
-                    c.write()
-                c.store()
+                applyControl(control)
+                control.store()
             except:
-                print("Error with Read of Control:: {}\n".format(c.name))
+                print("Error with Read of Control:: {}\n".format(control.name))
                 print(Exception)
                 traceback.print_exc()
                 # experimentThreadStop()
@@ -305,7 +323,7 @@ def experimentThread(cycle_length, dev, con):
         database.cycleSet(cycle_length)
         if running:
             threadHandle = threading.Timer(
-                newTime, experimentThread, (cycle_length, dev, con)
+                newTime, experimentThread, (cycle_length, dev, connections)
             )
             threadHandle.daemon = True
             threadHandle.start()
@@ -368,11 +386,11 @@ def experimentThreadStart(cycle_length, dev, con):
 
 
 # Initialize variables
-feedbackModules = {}
+feedbackModules: dict = {}
 runningExperiments = experiment(os.path.join(basedir, "experiments")).running
 running_start = experiment(os.path.join(basedir, "experiments")).running_start
 I2C_dev, equations = innit_connected()
-I2C_con = innit_control()
+I2C_con: list[sensor.I2C] = innit_control()
 
 toDisplay = []
 devices = [dev.name for dev in Sensor.select()]

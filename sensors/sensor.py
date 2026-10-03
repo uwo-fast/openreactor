@@ -18,17 +18,17 @@ class I2C:
 
     def __init__(
         self,
-        name,
-        units,
-        form="atlas",
-        address=99,
+        name: str,
+        units: str,
+        form: str = "atlas",
+        address: int = 99,
         request_message=0x52,
-        delay=0.9,
-        read_length=31,
+        delay: float = 0.9,
+        read_length: int = 31,
         enabled=-1,
         params=-1,
-        def_state=False,
-        auto=True,
+        def_state: bool = False,
+        auto: bool = True,
     ):
         """
         Contains all essential information for communication with the device.
@@ -50,7 +50,7 @@ class I2C:
         read_length : int
             Number of bytes to read from register.
         """
-        self.name = name
+        self.name: str = name
         self.units = units
         self.addr = address
         self.req_msg = request_message
@@ -114,7 +114,7 @@ class I2C:
         except Exception as e:
             print(f"Error writing to device {self.name}: {e}")
 
-    def controlMessage(self, message, type="f"):
+    def controlMessage(self, message: bytes, type="f"):
         """
         Used to change the byte array that is written to a given address.
         Store must be called separately.

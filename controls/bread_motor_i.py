@@ -1,6 +1,9 @@
 import struct
 from database.model import ControlReading
 
+# Open loop: safe to apply a change from the interface straight away
+APPLY_ON_CHANGE = True
+
 
 class feedback:
     """

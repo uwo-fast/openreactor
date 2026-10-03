@@ -196,6 +196,7 @@ To define the feedback for a control system a `.py` file with a path as defined 
 - Return must be from a function named _process_ that does not take any required arguments
 - Must have property self.outputType a string that contains the type of packing used for the byte, ie. 'f' for a float or 'b' for a signed char
 - _reset_ must be a function that resets the parameters to their default values
+- May set a module-level `APPLY_ON_CHANGE = True` if `process` is safe to call whenever its parameters change in the interface, as for an open-loop output like a motor speed. A change is then sent to the device straight away rather than on the next experiment cycle. Leave it unset for closed-loop controls such as a PID, which need fresh sensor readings. Disabling a control always resets it straight away.
 
 **NOTE** see _control/demo.py_ for an example and more information
 

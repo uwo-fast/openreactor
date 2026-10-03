@@ -6,7 +6,7 @@ from app import (
     devices,
     controls,
     I2C_dev,
-    I2C_con,
+    I2C_connections,
     equations,
     THREAD_TIME,
     experimentThreadStart,
@@ -26,6 +26,7 @@ from database.model import (
 from experiments.experiments import experiment
 import json
 import time
+import traceback
 from datetime import datetime, timedelta
 import os
 from pathlib import Path
@@ -281,8 +282,8 @@ def resetControls():
     """
     Resets the parameters of the control systems to default.
     """
-    global I2C_con
-    for con in I2C_con:
+    global I2C_connections
+    for con in I2C_connections:
         con.reset_control()
     ret = updateControls()
     return ("", 204)
@@ -309,14 +310,20 @@ def measure(side):
                     dev.store(equations[dev.name])
         elif side == "control":
             control_return = request.json
-            nm = control_return["name"]
+            control_name = control_return["name"]
             print(f"Control Return: {control_return}")
-            for c in I2C_con:
-                if c.name == nm:
+            for control in I2C_connections:
+                if control.name == control_name:
+                    # What remains after removing name and enabled is the params
                     del control_return["name"]
-                    c.control_state(int(control_return["enabled"]))
+                    control.control_state(int(control_return["enabled"]))
                     del control_return["enabled"]
-                    c.edit_params(control_return)
+                    control.edit_params(control_return)
+                    try:
+                        utils.applyControlChange(control)
+                    except Exception:
+                        print("Error applying control :: {}".format(control.name))
+                        traceback.print_exc()
     return ("", 204)
 
 
@@ -351,7 +358,7 @@ def updateExp(method, name):
         if method == "new":
             success = exp.new(name)
         elif method == "start":
-            experimentThreadStart(THREAD_TIME, I2C_dev, I2C_con)
+            experimentThreadStart(THREAD_TIME, I2C_dev, I2C_connections)
             success = exp.start(name)
         elif method == "end":
             experimentThreadStop()
