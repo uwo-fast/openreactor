@@ -32,7 +32,12 @@ def form(form, data):
         # Byte 0 is the EZO status code, followed by the reading as ASCII.
         # Take the leading number: it stops at the NUL terminator, and at the
         # comma when a multi-output circuit (e.g. EC) sends several values,
-        # of which the first is the primary reading.
+        # of which the first is the primary reading. Any status other than 1
+        # (success) means there is no new reading: 254 pending, 255 no data,
+        # 2 syntax error.
+        if data[0] & 0x7F != 1:
+            print(f"EZO status {data[0]}: no new reading")
+            return None
         text = "".join(chr(x & ~0x80) for x in data[1:])
         match = re.match(r"[-+]?[0-9.]+", text)
         result = match.group() if match else ""
