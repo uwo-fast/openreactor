@@ -173,19 +173,15 @@
             }
             if (side == "right") {
                 var newName = document.createElement('div');
-                var newData = document.createElement('div');
                 var newEnabled = document.createElement('div');
                 var newBut = document.createElement('button');
                 var newInput = document.createElement('input');
                 var newSelect = document.createElement('select')
                 var stateEnabled = document.createElement('div')
-                newName.innerHTML = "" + object[i] + "<br>Actual:<br>";
+                newName.innerHTML = "" + object[i] + "<br>";
                 newName.id = "DivChild" + i + side;
-                newData.id = "" + i + side;
-                newName.appendChild(newData);
                 newName.appendChild(newEnabled);
                 newName.appendChild(newBut);
-                newData.innerHTML = conVal[i];
                 newEnabled.innerHTML = "Enabled:<br>";
                 /*
                 newInput.type="number";
@@ -279,9 +275,7 @@
                     document.getElementById(str).innerHTML = Math.round(dataNew.val[i] * 100) / 100;
                 }
                 for (let i = 0; i < dataNew.con.length; i++) {
-                    const str = '' + i + 'right';
                     //const strTar=''+i+'input';
-                    document.getElementById(str).innerHTML = dataNew.con_val[i]
                     $(`#${i}enabled`).text(Boolean(dataNew.en[i]))
                     //document.getElementById(''+i+'select').selectedIndex=dataNew.en[i]
                     for (const p in params[i]) {
