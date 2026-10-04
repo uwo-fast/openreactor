@@ -69,6 +69,7 @@ openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
 openreactor serve                    # serve the HTTP API until Ctrl-C
 openreactor hash-password            # make a server.password_hash
+openreactor profile validate --dry-run FILE  # check a run profile, print its timeline
 ```
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
@@ -103,6 +104,13 @@ the same machine, keep the original `Host` header and send
 `X-Forwarded-Proto`, or browser sign-in fails its Origin check. Never proxy a
 server that has no password: it trusts every request that reaches it under a
 loopback Host name, and the proxy is one.
+
+A run profile is a TOML schedule of setpoints for the actuated channels: each
+channel's steps `set` a value, `ramp` to one over a duration, `hold`, or turn
+`off`. `openreactor profile validate FILE` checks one, naming each problem's
+place in the file and how to fix it; `-c CONFIG` also checks its channels exist,
+and `--dry-run` prints what happens when. `examples/profiles/ramp-and-hold.toml`
+shows every step. Running a profile comes with the slices.
 
 Calibration points by family:
 
