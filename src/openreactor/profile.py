@@ -83,9 +83,9 @@ class Profile:
     def value_at(self, channel: str, t: float) -> Setpoint:
         """The setpoint for ``channel`` at ``t`` seconds from the start.
         From the profile's end on, every channel is off."""
-        if t >= self.duration:
-            return OFF
         segments = self.channels[channel]
+        if not t < self.duration:  # also NaN
+            return OFF
         i = bisect.bisect_right([s.start for s in segments], t) - 1
         return None if i < 0 else segments[i].value_at(t)
 
@@ -179,13 +179,25 @@ def parse_profile(data: Any, channels: Collection[str] | None = None) -> Profile
                 continue
             # Only for steps that are otherwise right: a ramp that failed is
             # not also a channel that never sets a value.
-            if len(problems) == before and not any(s.action in ("set", "ramp") for s in segments):
-                error(path, "never sets a value", "add a set or a ramp step")
+            if len(problems) == before and not any(
+                s.action in ("set", "ramp", "off") for s in segments
+            ):
+                error(path, "never sets a value", "add a set, a ramp or an off step")
             timelines[channel] = segments
 
     profile = Profile(name.strip(), notes, timelines)
     if not problems and profile.duration == 0:
         error("channels", "the profile takes no time", "add a hold or a ramp step")
+    elif not problems:
+        # Every channel goes off at the end, so a set there never happens.
+        for channel, segments in timelines.items():
+            for s in segments:
+                if s.action == "set" and s.start == profile.duration:
+                    error(
+                        f"channels.{channel}[{s.step}]",
+                        "comes at the profile's end, when every channel goes off",
+                        "add a hold after it, or remove it",
+                    )
     if problems:
         raise ProfileError(problems)
     return profile
@@ -300,8 +312,8 @@ def _duration(value: Any, path: str, error: Any) -> float | None:
         error(path, f"{value!r} is not a duration", hint)
         return None
     seconds = float(match.group(1)) * _UNIT_S[match.group(2)]
-    if seconds <= 0:
-        error(path, "must be longer than zero", hint)
+    if seconds < 0.001:
+        error(path, "must be at least 1 ms", hint)
         return None
     if seconds > MAX_STEP_S:
         error(path, "must be at most 30 days", "split a longer step into several")

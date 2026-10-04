@@ -110,7 +110,9 @@ def test_durations(text: str, seconds: float):
     assert profile(jacket=[{"set": 1}, {"hold": text}]).duration == seconds
 
 
-@pytest.mark.parametrize("text", ["2h15m", "-1m", "0s", "1d", "m", "1.m", "1e3s", "", "٣٠s"])
+@pytest.mark.parametrize(
+    "text", ["2h15m", "-1m", "0s", "0.0009s", "1d", "m", "1.m", "1e3s", "", "٣٠s"]
+)
 def test_bad_durations(text: str):
     message = bad_step({"hold": text})
     assert message.startswith("channels.jacket[2].hold: ")
@@ -203,7 +205,7 @@ def test_a_huge_integer_from_toml_is_a_problem_not_a_crash():
 
 def test_a_channel_that_never_sets_a_value_is_rejected():
     assert problems({"version": 1, "name": "p", "channels": {"j": [{"hold": "1h"}]}}) == [
-        "channels.j: never sets a value (add a set or a ramp step)"
+        "channels.j: never sets a value (add a set, a ramp or an off step)"
     ]
 
 
@@ -328,3 +330,25 @@ def test_validate_checks_channels_against_a_config(tmp_path: Path, capsys):
 def test_validate_reports_a_missing_file(tmp_path: Path, capsys):
     assert cli.main(["profile", "validate", str(tmp_path / "nope.toml")]) == 1
     assert "No such file or directory" in capsys.readouterr().err
+
+
+def test_a_channel_kept_off_for_the_run_is_valid():
+    p = profile(jacket=[{"set": 30}, {"hold": "1h"}], stirrer=[{"off": True}])
+    assert p.value_at("stirrer", 0) == OFF
+
+
+def test_a_set_at_the_profiles_end_is_rejected():
+    assert bad_steps({"set": 1}, {"hold": "1h"}, {"set": 5}) == [
+        "channels.jacket[2]: comes at the profile's end, when every channel goes off "
+        "(add a hold after it, or remove it)"
+    ]
+    # An off there is what happens anyway, and is fine.
+    profile(jacket=[{"set": 1}, {"hold": "1h"}, {"off": True}])
+
+
+def test_value_at_an_unknown_channel_or_nan():
+    p = profile(jacket=[{"set": 1}, {"hold": "1h"}])
+    for t in (0, 7200):
+        with pytest.raises(KeyError):
+            p.value_at("nothing", t)
+    assert p.value_at("jacket", float("nan")) == OFF
