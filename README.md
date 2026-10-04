@@ -40,7 +40,9 @@ just check   # format check, lint, type-check
 just test    # run the tests
 ```
 
-`just --list` shows the other recipes. Optionally, install the pre-commit hooks
+To validate a configuration file, run
+`just run check-config examples/openreactor.toml`. The example lists every
+setting with a comment. `just --list` shows the other recipes. Optionally, install the pre-commit hooks
 with `pre-commit install`.
 
 ## Contributing

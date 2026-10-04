@@ -1,0 +1,74 @@
+# openreactor configuration.
+#
+# Every device is listed here; nothing is discovered. Check this file with
+#   openreactor check-config openreactor.toml
+
+[server]
+# Listen on this machine only. Anything other than a loopback address will
+# need a password_hash.
+host = "127.0.0.1"
+port = 8080
+# password_hash = "scrypt$..."
+
+[controller]
+# How often each slice is polled. The poll is also the slice's watchdog
+# keep-alive.
+slice_poll_s = 1.0
+# How often the EZO sensors are read. Must be at least the slowest EZO read
+# plus 0.2 s (pH: 0.9 s, ORP: 1.0 s; pH, EC and DO with temperature
+# compensation: 0.9 s).
+ezo_period_s = 2.0
+# A slice stops its outputs when it has not heard from openreactor for this
+# long. Between 3 x slice_poll_s and 65535 ms.
+watchdog_timeout_ms = 5000
+
+# Set each address to what your board answers on. The EZO addresses below are
+# the factory defaults. Addresses are 7-bit, 0x08 to 0x77, and a bus and
+# address pair may be used once.
+# Device and channel names use a-z, 0-9 and _, start with a letter, and are
+# unique across the whole file.
+
+# RLHT heater slice: two heater outputs, each with an onboard PID on one of
+# two thermocouples.
+[[device]]
+name = "heater"
+kind = "rlht"
+bus = "/dev/i2c-1"
+address = 0x0A
+channels.jacket = { label = "Jacket heater", output = 1, tc = 1 }
+# A slice without the watchdog capability is read-only unless this is true.
+# If openreactor stops or the Pi loses power, such a slice keeps its last
+# output.
+# allow_unprotected = false
+
+# DCMT motor slice: two motors, each open-loop PWM or onboard speed or
+# position PID, depending on what the slice reports it can do.
+[[device]]
+name = "motors"
+kind = "dcmt"
+bus = "/dev/i2c-1"
+address = 0x0B
+channels.stirrer = { label = "Stirrer", motor = 1 }
+
+# Atlas Scientific EZO sensors: ezo-ph, ezo-orp, ezo-rtd, ezo-ec, ezo-do and
+# ezo-hum. Each one is a single channel named after the device.
+[[device]]
+name = "vessel_temp"
+kind = "ezo-rtd"
+bus = "/dev/i2c-1"
+address = 0x66
+
+[[device]]
+name = "ph"
+kind = "ezo-ph"
+bus = "/dev/i2c-1"
+address = 0x63
+# pH, EC and DO can use the temperature from an ezo-rtd device.
+temp_comp = "vessel_temp"
+
+[[device]]
+name = "do"
+kind = "ezo-do"
+bus = "/dev/i2c-1"
+address = 0x61
+temp_comp = "vessel_temp"
