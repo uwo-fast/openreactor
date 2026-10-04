@@ -1,0 +1,25 @@
+{% if run %}
+<div class="alert {{ 'alert-warning' if recording_failed else 'alert-info' }} d-flex align-items-center justify-content-between">
+  <span>Run {{ run }} is {% if recording_failed %}open, but recording stopped: {{ recording_failed }}{% else %}recording{% endif %}.</span>
+  <button class="btn btn-sm btn-outline-dark" hx-post="/ui/runs/stop" hx-target="#notice">Stop run</button>
+</div>
+{% endif %}
+{% if runs %}
+<table class="table table-sm align-middle">
+  <thead><tr><th>#</th><th>Name</th><th>Status</th><th>Started (UTC)</th><th>Notes</th><th></th></tr></thead>
+  <tbody>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.name }}</td>
+      <td>{{ r.status }}</td>
+      <td class="font-monospace small">{{ r.started | utc }}</td>
+      <td class="small">{{ r.notes }}</td>
+      <td><a class="btn btn-sm btn-outline-secondary" href="/api/v1/runs/{{ r.id }}/export">Export</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="text-body-secondary">No runs recorded yet.</p>
+{% endif %}

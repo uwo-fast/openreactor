@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Runs · openreactor{% endblock %}
+{% block content %}
+<h1 class="h4">Runs</h1>
+<form class="row g-2 mb-3" hx-post="/ui/runs" hx-target="#notice">
+  <div class="col-sm-4"><input class="form-control" name="name" placeholder="Run name" required maxlength="200" aria-label="Run name"></div>
+  <div class="col-sm-6"><input class="form-control" name="notes" placeholder="Notes (optional)" maxlength="10000" aria-label="Notes"></div>
+  <div class="col-sm-2"><button class="btn btn-primary w-100">Start</button></div>
+</form>
+<div hx-get="/ui/runs" hx-trigger="load, changed from:body, every 10s">Loading…</div>
+{% endblock %}

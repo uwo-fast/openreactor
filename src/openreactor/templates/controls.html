@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Controls · openreactor{% endblock %}
+{% block content %}
+<h1 class="h4">Controls</h1>
+<p>Stop all, in the bar above, puts every output in its safe state at once.</p>
+{% if channels %}
+<table class="table align-middle">
+  <thead><tr><th>Channel</th><th>Device</th><th>Setpoint</th></tr></thead>
+  <tbody>
+    {% for c in channels %}
+    <tr>
+      <td>{{ c.label }} <span class="text-body-secondary">({{ c.name }})</span></td>
+      <td>{{ c.device }} ({{ c.kind }})</td>
+      <td>
+        <form class="d-flex gap-2" hx-post="/ui/channels/{{ c.name }}/setpoint" hx-target="#notice">
+          <input class="form-control form-control-sm setpoint" name="value" type="number" step="any" required aria-label="Setpoint for {{ c.name }}">
+          <button class="btn btn-sm btn-primary">Set</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="text-body-secondary">The config has no actuated channels.</p>
+{% endif %}
+{% endblock %}

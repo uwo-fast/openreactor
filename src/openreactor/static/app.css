@@ -1,0 +1,9 @@
+/* openreactor's own styles, on top of the vendored Bootstrap. */
+
+.setpoint {
+  max-width: 10rem;
+}
+
+#charts canvas {
+  max-height: 160px;
+}

@@ -38,7 +38,7 @@ from urllib.parse import parse_qs, urlsplit
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -443,6 +443,33 @@ def delete_calibration(device: str, svc: Svc) -> CalibrationStatus:
     return CalibrationStatus(device=device, status=svc.clear_calibration(device))
 
 
+# What each service error is, as an HTTP status.
+ERRORS: tuple[tuple[type[Exception], int], ...] = (
+    (NotFound, 404),
+    (Conflict, 409),
+    (Unavailable, 409),
+    (Invalid, 422),
+    # The circuit refused the command or could not be reached.
+    (EzoStatusError, 502),
+    (EzoDeviceError, 502),
+    (StorageError, 503),
+    (sqlite3.Error, 503),
+    (ControllerClosed, 503),
+    (FutureTimeout, 504),
+)
+
+
+def error_detail(exc: Exception) -> str:
+    if isinstance(exc, EzoStatusError):
+        return f"the circuit answered {exc.outcome.value}"
+    return str(exc) or "the controller did not finish in time"
+
+
+def wants_html(request: Request) -> bool:
+    """A browser submitting a form, rather than a script or htmx."""
+    return "text/html" in request.headers.get("accept", "") and "hx-request" not in request.headers
+
+
 async def _password_from(request: Request) -> str:
     body = await request.body()
     if request.headers.get("content-type", "").startswith("application/json"):
@@ -514,39 +541,34 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
         except Busy:
             raise _busy() from None
         if not ok:
+            if wants_html(request):
+                from openreactor import ui
+
+                return ui.login_page(request, error="Wrong password.", status_code=401)
             raise HTTPException(status_code=401, detail="wrong password")
         gate.sign_out(request.session.get("id"))
         request.session.clear()
         request.session["id"] = gate.sign_in()
+        if wants_html(request):
+            return RedirectResponse("/", status_code=303)
         return Response(status_code=204)
 
     @app.post("/logout", status_code=204, include_in_schema=False)
     def logout(request: Request) -> Response:
         app.state.gate.sign_out(request.session.get("id"))
         request.session.clear()
+        if wants_html(request):
+            return RedirectResponse("/login", status_code=303)
         return Response(status_code=204)
 
-    for error, code in (
-        (NotFound, 404),
-        (Conflict, 409),
-        (Unavailable, 409),
-        (Invalid, 422),
-        # The circuit refused the command or could not be reached.
-        (EzoStatusError, 502),
-        (EzoDeviceError, 502),
-        (StorageError, 503),
-        (sqlite3.Error, 503),
-        (ControllerClosed, 503),
-        (FutureTimeout, 504),
-    ):
+    for error, code in ERRORS:
 
         def handler(request: Request, exc: Exception, code: int = code) -> JSONResponse:
-            if isinstance(exc, EzoStatusError):
-                detail = f"the circuit answered {exc.outcome.value}"
-            else:
-                detail = str(exc) or "the controller did not finish in time"
-            return JSONResponse({"detail": detail}, status_code=code)
+            return JSONResponse({"detail": error_detail(exc)}, status_code=code)
 
         app.add_exception_handler(error, handler)
 
+    from openreactor import ui
+
+    ui.install(app)
     return app
