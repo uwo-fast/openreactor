@@ -73,6 +73,18 @@ openreactor hash-password            # make a server.password_hash
 openreactor profile validate --dry-run FILE  # check a run profile, print its timeline
 ```
 
+`run` and `serve` also start each RLHT heater slice in the config, and `read`
+and `ezo cal` never touch one. Start-up checks the slice is an RLHT built with
+CRUMBS 0.12.0 or later, sends its safe state (setpoints to zero, then open-loop
+duty to zero), arms its command watchdog with `watchdog_timeout_ms` and
+confirms it, then sets closed-loop mode, the thermocouples, and any periods and
+PID gains the config sets. A slice without the watchdog capability stays
+read-only unless its config sets `allow_unprotected = true`. Each slice is then
+polled every `slice_poll_s`, which also keeps its watchdog fed, and its
+channels' temperature, setpoint and duty are read and recorded like any
+sensor. Stop-all sends every slice its safe state. Setpoints on slices, and
+the watchdog's trip and reboot checks, come next (#24).
+
 A run records every reading and event (stop-all, failed reads) in SQLite, at
 `storage.database`, by default `~/.local/state/openreactor/openreactor.db`. An
 export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's

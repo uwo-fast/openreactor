@@ -392,3 +392,46 @@ def test_storage_database_must_be_absolute():
         "storage.database: must be an absolute path"
     ]
     assert problems(config(storage={"path": "/x"})) == ["storage.path: unknown key"]
+
+
+def test_rlht_gains_and_period_are_optional_and_parsed():
+    data = config()
+    data["device"][0]["channels"] = {
+        "jacket": {"output": 1, "tc": 1, "kp": 2.5, "ki": 0.1, "kd": 0, "period_ms": 2000}
+    }
+    [heater] = [d for d in parse_config(data).devices if d.kind == "rlht"]
+    [jacket] = heater.channels
+    assert (jacket.kp, jacket.ki, jacket.kd, jacket.period_ms) == (2.5, 0.1, 0.0, 2000)
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1}}
+    [heater] = [d for d in parse_config(data).devices if d.kind == "rlht"]
+    assert (heater.channels[0].kp, heater.channels[0].period_ms) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("channel", "problem"),
+    [
+        (
+            {"kp": 1.0},
+            "device[0].channels.jacket: sets kp without ki, kd: set kp, ki and kd together",
+        ),
+        ({"kp": 1, "ki": 1, "kd": 26}, "device[0].channels.jacket.kd: must be between 0 and 25.5"),
+        ({"kp": -1, "ki": 1, "kd": 1}, "device[0].channels.jacket.kp: must be between 0 and 25.5"),
+        (
+            {"kp": 1.25, "ki": 1, "kd": 1},
+            "device[0].channels.jacket.kp: must be a multiple of 0.1, as the slice stores it",
+        ),
+        ({"kp": True, "ki": 1, "kd": 1}, "device[0].channels.jacket.kp: must be a number"),
+        ({"period_ms": 0}, "device[0].channels.jacket.period_ms: must be between 1 and 65535"),
+        ({"period_ms": 70000}, "device[0].channels.jacket.period_ms: must be between 1 and 65535"),
+    ],
+)
+def test_rlht_gains_and_period_are_checked(channel: dict[str, Any], problem: str):
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, **channel}}
+    assert problems(data) == [problem]
+
+
+def test_gains_are_not_for_motors():
+    data = config()
+    data["device"][1]["channels"] = {"stirrer": {"motor": 1, "kp": 1.0}}
+    assert problems(data) == ["device[1].channels.stirrer.kp: unknown key"]

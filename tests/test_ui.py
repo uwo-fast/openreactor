@@ -135,7 +135,7 @@ def test_stop_all(ui):
     bench, client = ui
     r = client.post("/ui/stop-all", headers=HX)
     assert r.status_code == 200
-    assert "Stop-all sent: jacket." in r.text
+    assert "Stop-all sent: jacket, heater." in r.text
     assert "alert-success" in r.text
     assert bench.log == ["safe jacket"]
 
@@ -143,7 +143,7 @@ def test_stop_all(ui):
 def test_a_stop_all_that_failed_is_shown_as_a_failure(ui):
     """An output that did not go safe must never read as success."""
     bench, client = ui
-    [actuator] = bench.app.state.service.controller.actuators
+    actuator = bench.app.state.service.controller.actuators[0]
     actuator.fail = OSError("i2c bus timeout")
     r = client.post("/ui/stop-all", headers=HX)
     assert r.status_code == 502

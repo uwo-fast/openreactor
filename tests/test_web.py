@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from fakes import FakeActuator, FakePort
+from fakes import FakeActuator, FakeI2cBus, FakePort, FakeRlht
 from fastapi.testclient import TestClient
 
 from openreactor import cli
@@ -73,6 +73,8 @@ class Bench:
             wait_ms=300,
         )
         self.log: list[str] = []
+        # The config's RLHT, answering on a fake bus.
+        self.rlht = FakeRlht()
         self.lock = tmp_path / "openreactor.lock"
 
         def open_port(d: DeviceConfig) -> FakePort:
@@ -84,6 +86,7 @@ class Bench:
                 self.text,
                 open_port=open_port,
                 actuators=[FakeActuator("jacket", self.log)],
+                open_bus=lambda path: FakeI2cBus({0x0A: self.rlht}),
                 lock_path=self.lock,
                 clock=fast_clock,
                 sleep=fast_sleep,
@@ -132,7 +135,7 @@ def test_status_lists_the_devices(open_bench):
     body = r.json()
     assert body["run"] is None
     assert body["devices"] == [
-        {"name": "heater", "kind": "rlht", "status": "slices are not supported yet"},
+        {"name": "heater", "kind": "rlht", "status": "ok"},
         {"name": "air", "kind": "ezo-hum", "status": "ok"},
     ]
 
@@ -161,17 +164,26 @@ def test_a_cross_site_post_is_refused(open_bench):
 
 def test_channels_show_the_latest_reading(open_bench):
     _, client = open_bench
-    until(lambda: len(client.get("/api/v1/channels").json()) == 2)
+    until(lambda: len(client.get("/api/v1/channels").json()) == 5)
     channels = {c["name"]: c for c in client.get("/api/v1/channels").json()}
     assert channels["air.humidity"]["value"] == 41.0
     assert channels["air.humidity"]["unit"] == "%"
     assert channels["air.temperature"]["outcome"] == "ok"
+    # The RLHT's channel, from its GET_STATE poll.
+    assert (channels["jacket.temperature"]["value"], channels["jacket.temperature"]["unit"]) == (
+        25.1,
+        "°C",
+    )
+    assert channels["jacket.temperature"]["device"] == "heater"
 
 
 def test_stop_all_returns_its_events(open_bench):
     bench, client = open_bench
     events = client.post("/api/v1/stop-all").json()
-    assert [(e["kind"], e["device"], e["result"]) for e in events] == [("stop-all", "jacket", "ok")]
+    assert [(e["kind"], e["device"], e["result"]) for e in events] == [
+        ("stop-all", "jacket", "ok"),
+        ("stop-all", "heater", "ok"),
+    ]
     assert bench.log == ["safe jacket"]
 
 

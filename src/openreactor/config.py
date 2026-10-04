@@ -33,6 +33,12 @@ ADDRESS_MIN = 0x08
 ADDRESS_MAX = 0x77
 WATCHDOG_MAX_MS = 65535  # a u16 on the wire
 
+# RLHT gains go to the slice as one byte each, ten times the gain.
+GAINS = ("kp", "ki", "kd")
+GAIN_MAX = 25.5
+# An RLHT output's time-proportioning period, a u16 on the wire.
+PERIOD_MAX_MS = 65535
+
 # The key that picks the hardware output for each slice channel.
 OUTPUT_KEY = {"rlht": "output", "dcmt": "motor"}
 
@@ -74,6 +80,11 @@ class ChannelConfig:
     label: str
     output: int
     tc: int | None = None
+    # RLHT only, each optional: sent to the slice only when set.
+    kp: float | None = None
+    ki: float | None = None
+    kd: float | None = None
+    period_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -358,7 +369,9 @@ class _Parser:
             self.error(path, "must define at least one channel")
             return ()
         out_key = OUTPUT_KEY[kind]
-        allowed = ("label", out_key, "tc") if kind == "rlht" else ("label", out_key)
+        allowed = (
+            ("label", out_key, "tc", *GAINS, "period_ms") if kind == "rlht" else ("label", out_key)
+        )
         result: list[ChannelConfig] = []
         used: dict[int, str] = {}
         for ch_name, raw_ch in t.items():
@@ -382,9 +395,55 @@ class _Parser:
                 used.setdefault(output, ch_name)
             # Kept even when a field failed, so its name is still checked against
             # the other devices; any error recorded here fails the whole config.
+            gains = self.gains(ch, cpath) if kind == "rlht" else None
+            period_ms = None
+            if kind == "rlht" and "period_ms" in ch:
+                period_ms = self.integer(ch["period_ms"], f"{cpath}.period_ms")
+                if period_ms is not None and not 1 <= period_ms <= PERIOD_MAX_MS:
+                    self.error(f"{cpath}.period_ms", f"must be between 1 and {PERIOD_MAX_MS}")
+                    period_ms = None
             if name_ok:
-                result.append(ChannelConfig(name=ch_name, label=label, output=output or 0, tc=tc))
+                kp, ki, kd = gains or (None, None, None)
+                result.append(
+                    ChannelConfig(
+                        name=ch_name,
+                        label=label,
+                        output=output or 0,
+                        tc=tc,
+                        kp=kp,
+                        ki=ki,
+                        kd=kd,
+                        period_ms=period_ms,
+                    )
+                )
         return tuple(result)
+
+    def gains(self, ch: dict[str, Any], path: str) -> tuple[float, float, float] | None:
+        """kp, ki and kd: all three or none. The slice takes each as a byte
+        holding ten times the gain, so 0 to 25.5 in steps of 0.1."""
+        given = [g for g in GAINS if g in ch]
+        if not given:
+            return None
+        if len(given) != len(GAINS):
+            missing = ", ".join(g for g in GAINS if g not in ch)
+            self.error(
+                path, f"sets {', '.join(given)} without {missing}: set kp, ki and kd together"
+            )
+            return None
+        values: list[float] = []
+        for g in GAINS:
+            value = ch[g]
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                self.error(f"{path}.{g}", "must be a number")
+                return None
+            if not (math.isfinite(value) and 0 <= value <= GAIN_MAX):
+                self.error(f"{path}.{g}", f"must be between 0 and {GAIN_MAX}")
+                return None
+            if abs(value * 10 - round(value * 10)) > 1e-9:
+                self.error(f"{path}.{g}", "must be a multiple of 0.1, as the slice stores it")
+                return None
+            values.append(float(value))
+        return values[0], values[1], values[2]
 
     def one_or_two(self, t: dict[str, Any], key: str, path: str) -> int | None:
         if key not in t:
