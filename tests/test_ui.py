@@ -135,8 +135,20 @@ def test_stop_all(ui):
     bench, client = ui
     r = client.post("/ui/stop-all", headers=HX)
     assert r.status_code == 200
-    assert "Stop-all sent. jacket: ok" in r.text
+    assert "Stop-all sent: jacket." in r.text
+    assert "alert-success" in r.text
     assert bench.log == ["safe jacket"]
+
+
+def test_a_stop_all_that_failed_is_shown_as_a_failure(ui):
+    """An output that did not go safe must never read as success."""
+    bench, client = ui
+    [actuator] = bench.app.state.service.controller.actuators
+    actuator.fail = OSError("i2c bus timeout")
+    r = client.post("/ui/stop-all", headers=HX)
+    assert r.status_code == 502
+    assert "alert-danger" in r.text and "alert-success" not in r.text
+    assert "Stop-all FAILED for jacket: error: i2c bus timeout" in r.text
 
 
 def test_calibrate_an_ezo_device(ui):
@@ -215,6 +227,32 @@ def test_actions_need_sign_in_and_a_matching_origin(locked_ui):
     assert bench.log == []
     assert client.post("/ui/stop-all", headers=HX).status_code == 200
     assert bench.log == ["safe jacket"]
+
+
+def test_an_ended_session_takes_the_page_to_sign_in(locked_ui):
+    _, client = locked_ui
+    client.post("/login", data={"password": PASSWORD}, headers=BROWSER)
+    assert client.get("/ui/channels", headers=HX).status_code == 200
+    client.post("/logout", headers=BROWSER)
+    r = client.get("/ui/channels", headers=HX)
+    assert r.status_code == 401
+    assert r.headers["HX-Redirect"] == "/login"
+
+
+def test_signing_out_from_another_site_is_refused(locked_ui):
+    _, client = locked_ui
+    client.post("/login", data={"password": PASSWORD}, headers=BROWSER)
+    r = client.post("/logout", headers={"Origin": "http://127.0.0.1:9999"})
+    assert r.status_code == 403
+    assert client.get("/", follow_redirects=False).status_code == 200
+
+
+def test_no_page_can_be_framed_by_another_site(ui):
+    _, client = ui
+    for path in ["/", "/runs", "/api/v1/status", "/static/app.js"]:
+        r = client.get(path)
+        assert r.headers["x-frame-options"] == "DENY", path
+        assert r.headers["content-security-policy"] == "frame-ancestors 'none'", path
 
 
 def test_the_api_still_answers_json(locked_ui):

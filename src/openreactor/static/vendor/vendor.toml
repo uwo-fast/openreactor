@@ -4,7 +4,8 @@
 # below, run `just vendor`, and commit the files with the new hashes it writes
 # here. Never edit a vendored file; style and behaviour of our own go in
 # ../app.css and ../app.js. The tests check every file still matches its
-# sha256, and the About page lists what is here. See VENDORED.md.
+# sha256, and the About page lists what is here. A new [[file]] needs a
+# sha256 line too, empty until `just vendor` fills it. See VENDORED.md.
 
 [[file]]
 package = "bootstrap"

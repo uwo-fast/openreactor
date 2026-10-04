@@ -23,9 +23,10 @@ manifest. Each package's licence file sits beside it.
   `just vendor`, and commit the downloaded files with the new hashes it
   records. The diff shows exactly which files changed. Read the package's
   release notes before merging.
-- **If a patch ever becomes unavoidable**, it lives as a `.patch` file beside
-  the manifest, applied by `scripts/vendor.py`, with the reason recorded here,
-  so it is visible and survives the next update.
+- **If a patch ever becomes unavoidable**, it should live as a `.patch` file
+  beside the manifest, applied by `scripts/vendor.py` after each download (the
+  script does not do this yet), with the reason recorded here, so it is
+  visible and survives the next update.
 - **When to stop vendoring:** once the UI needs a build step (TypeScript,
   bundling) or more than a handful of libraries, a JavaScript package manager
   with a lockfile is the better tool. Three prebuilt files do not justify it.

@@ -25,19 +25,24 @@ function startCharts() {
     let channels;
     try {
       const response = await fetch(box.dataset.source, { headers: { Accept: "application/json" } });
-      if (!response.ok) return;
+      if (response.status === 401) {
+        // The session ended; the page's htmx requests take it to sign in.
+        return false;
+      }
+      if (!response.ok) return true;
       channels = await response.json();
     } catch {
-      return;
+      return true;
     }
     const now = new Date().toLocaleTimeString();
     for (const c of channels) {
-      if (c.value === null) continue;
       let chart = charts.get(c.name);
+      if (!chart && c.value === null) continue;
       if (!chart) {
         const cell = document.createElement("div");
         cell.className = "col-md-6";
         const canvas = document.createElement("canvas");
+        canvas.setAttribute("role", "img");
         canvas.setAttribute("aria-label", `${c.name} over time`);
         cell.append(canvas);
         box.append(cell);
@@ -48,16 +53,22 @@ function startCharts() {
         });
         charts.set(c.name, chart);
       }
+      // A failed read is a gap in the line, not a straight join across it.
       chart.data.labels.push(now);
-      chart.data.datasets[0].data.push(c.value);
+      chart.data.datasets[0].data.push(c.outcome === "ok" ? c.value : null);
       if (chart.data.labels.length > POINTS) {
         chart.data.labels.shift();
         chart.data.datasets[0].data.shift();
       }
       chart.update();
     }
+    return true;
   }
 
-  poll();
-  setInterval(poll, 2000);
+  // The next poll is scheduled after this one finishes, so a slow answer
+  // never stacks requests.
+  async function loop() {
+    if (await poll()) setTimeout(loop, 2000);
+  }
+  loop();
 }

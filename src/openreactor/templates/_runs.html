@@ -5,7 +5,7 @@
 </div>
 {% endif %}
 {% if runs %}
-<table class="table table-sm align-middle">
+<div class="table-responsive"><table class="table table-sm align-middle">
   <thead><tr><th>#</th><th>Name</th><th>Status</th><th>Started (UTC)</th><th>Notes</th><th></th></tr></thead>
   <tbody>
     {% for r in runs %}
@@ -19,7 +19,7 @@
     </tr>
     {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% else %}
 <p class="text-body-secondary">No runs recorded yet.</p>
 {% endif %}

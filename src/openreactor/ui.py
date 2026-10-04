@@ -150,16 +150,26 @@ def _notice(request: Request, message: str, *, ok: bool, status_code: int = 200)
     return _render(request, "_notice.html", status_code=status_code, message=message, ok=ok)
 
 
-async def _act(request: Request, work: Callable[[], str], *, changes: bool = True) -> HTMLResponse:
-    """Run ``work`` off the event loop; its message, or the error as the
-    API would report it, with the API's status."""
-    from openreactor.web import ERRORS, error_detail
+def _errors() -> tuple[tuple[type[Exception], int], ...]:
+    from openreactor.web import ERRORS
 
+    return ERRORS
+
+
+def _error_notice(request: Request, exc: Exception) -> HTMLResponse:
+    """The error as the API would report it, with the API's status."""
+    from openreactor.web import error_detail
+
+    code = next(c for e, c in _errors() if isinstance(exc, e))
+    return _notice(request, error_detail(exc), ok=False, status_code=code)
+
+
+async def _act(request: Request, work: Callable[[], str], *, changes: bool = True) -> HTMLResponse:
+    """Run ``work`` off the event loop: its message, or its error."""
     try:
         message = await run_in_threadpool(work)
-    except tuple(e for e, _ in ERRORS) as exc:
-        code = next(c for e, c in ERRORS if isinstance(exc, e))
-        return _notice(request, error_detail(exc), ok=False, status_code=code)
+    except tuple(e for e, _ in _errors()) as exc:
+        return _error_notice(request, exc)
     response = _notice(request, message, ok=True)
     if changes:
         # Lets the parts of the page that show runs or calibration refresh.
@@ -188,12 +198,18 @@ def runs_partial(request: Request) -> HTMLResponse:
 async def stop_all(request: Request) -> HTMLResponse:
     svc = _service(request)
 
-    def work() -> str:
-        events = svc.stop_all()
-        sent = ", ".join(f"{e.device}: {e.result}" for e in events if e.device)
-        return f"Stop-all sent. {sent or events[0].details}"
-
-    return await _act(request, work)
+    try:
+        events = await run_in_threadpool(svc.stop_all)
+    except tuple(e for e, _ in _errors()) as exc:
+        return _error_notice(request, exc)
+    failed = [e for e in events if e.result != "ok"]
+    if failed:
+        # Said plainly: an output that did not go safe is the one thing the
+        # operator must not miss.
+        detail = "; ".join(f"{e.device or 'stop-all'}: {e.result}" for e in failed)
+        return _notice(request, f"Stop-all FAILED for {detail}", ok=False, status_code=502)
+    sent = ", ".join(e.device for e in events if e.device)
+    return _notice(request, f"Stop-all sent: {sent or events[0].details}.", ok=True)
 
 
 @actions.post("/runs", response_class=HTMLResponse)
@@ -257,7 +273,31 @@ async def clear_calibration(request: Request, device: str) -> HTMLResponse:
     return await _act(request, lambda: f"{device}: {svc.clear_calibration(device)}")
 
 
+class NoFraming:
+    """Forbid other sites from framing any page: without a password, a page
+    framed on another site could otherwise be clicked through."""
+
+    def __init__(self, app: Any):
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def framed_send(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"x-frame-options", b"DENY"))
+                headers.append((b"content-security-policy", b"frame-ancestors 'none'"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, framed_send)
+
+
 def install(app: FastAPI) -> None:
+    app.add_middleware(NoFraming)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.include_router(pages)
     app.include_router(actions)
@@ -276,7 +316,12 @@ def install(app: FastAPI) -> None:
     async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
         # htmx swaps the response into the page: give it a notice, not JSON.
         if "hx-request" in request.headers:
-            return _notice(request, str(exc.detail), ok=False, status_code=exc.status_code)
+            response = _notice(request, str(exc.detail), ok=False, status_code=exc.status_code)
+            if exc.status_code == 401:
+                # The session ended (sign-out, 12 hours, a restart): take the
+                # whole page to sign in rather than fail every poll.
+                response.headers["HX-Redirect"] = "/login"
+            return response
         from fastapi.exception_handlers import http_exception_handler
 
         return await http_exception_handler(request, exc)

@@ -14,7 +14,7 @@
   <div class="card-body">
     <h2 class="h6 card-title">{{ d.name }} ({{ d.kind }}) calibration</h2>
     <div class="mb-2" hx-get="/ui/ezo/{{ d.name }}/calibration" hx-trigger="load, changed from:body">Asking the circuit…</div>
-    <form class="row g-2" hx-post="/ui/ezo/{{ d.name }}/calibration" hx-target="#notice">
+    <form class="row g-2" hx-post="/ui/ezo/{{ d.name }}/calibration" hx-target="#notice" hx-confirm="Calibrate {{ d.name }} now? On pH, a mid calibration erases the low and high points.">
       <div class="col-sm-4">
         <select class="form-select" name="point" aria-label="Calibration point for {{ d.name }}">
           {% for p in d.points %}<option value="{{ p.name }}">{{ p.name }}{% if not p.needs_value %} (no value){% endif %}</option>{% endfor %}
