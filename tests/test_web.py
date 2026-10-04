@@ -794,3 +794,17 @@ def test_a_declared_large_body_is_refused_without_reading_it():
         scope = {"type": "http", "headers": [(b"content-length", length.encode())]}
         asyncio.run(BodyLimit(app)(scope, receive, send))
         assert sent[0]["status"] == 413, length
+
+
+def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.rlht.arms = False
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        status = {d["name"]: d["status"] for d in client.get("/api/v1/status").json()["devices"]}
+        assert "watchdog did not arm" in status["heater"]
+        time.sleep(0.3)  # several slice polls at the bench's 20x clock
+        assert bench.rlht.state_replies == 0
+        bench.rlht.commands.clear()
+        events = client.post("/api/v1/stop-all").json()
+    assert ("heater", "ok") in [(e["device"], e["result"]) for e in events]
+    assert [op for op, _ in bench.rlht.commands][:2] == [0x02, 0x06]

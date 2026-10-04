@@ -517,3 +517,16 @@ def test_run_starts_the_slice_and_makes_it_safe_on_the_way_out(
     assert sent[:3] == [0x02, 0x06, 0x7E]
     assert sent[-2:] == [0x02, 0x06]
     assert heater.armed == 1
+
+
+def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(
+    config: str, ports, heater: FakeRlht, database: Path, monkeypatch, capsys
+):
+    """Polling would feed the watchdog of a slice whose start-up failed;
+    it must get only stop-all."""
+    heater.arms = False
+    stop_after(3.0, monkeypatch)
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 0
+    assert "watchdog did not arm" in capsys.readouterr().out
+    assert heater.state_replies == 0
+    assert [op for op, _ in heater.commands][-2:] == [0x02, 0x06]
