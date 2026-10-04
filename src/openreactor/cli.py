@@ -6,6 +6,7 @@ import getpass
 import ipaddress
 import json
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -680,17 +681,30 @@ def _status(args: argparse.Namespace) -> int:
 
 
 def _holder() -> str:
-    """Who holds the bus, to say why no server answered."""
+    """Who holds the bus, to say why no server answered. Read from the lock
+    file without taking the lock, so a serve starting now is never refused;
+    a holder killed with -9 leaves its line behind, so its pid is checked."""
     try:
-        with ControllerLock(lock_path):
-            return (
-                "Nothing holds the bus either: start openreactor serve. status reads "
-                "only from a server, since reading a slice feeds its watchdog."
-            )
-    except LockHeld as e:
-        return f"{e.holder} holds the bus; for a server on another address, pass --url."
+        text = Path(lock_path).read_text().strip()
     except OSError:
-        return "For a server on another address, pass --url."
+        text = ""
+    match = re.search(r"pid (\d+)", text)
+    if match is not None and _alive(int(match.group(1))):
+        return f"{text} holds the bus; for a server on another address, pass --url."
+    return (
+        "Nothing holds the bus either: start openreactor serve. status reads "
+        "only from a server, since reading a slice feeds its watchdog."
+    )
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's process
+    return True
 
 
 def _print_server_status(status: dict[str, Any], url: str) -> None:

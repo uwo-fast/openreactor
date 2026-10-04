@@ -99,6 +99,20 @@ def test_with_nothing_running_it_reads_nothing_and_says_so(
     assert "Nothing holds the bus either: start openreactor serve" in err
 
 
+def test_a_holder_killed_without_releasing_the_lock_is_not_named(
+    tmp_path: Path, lock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    import subprocess
+    import sys
+
+    gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                          capture_output=True, text=True, check=True)  # fmt: skip
+    lock.write_text(f"cam, pid {gone.stdout.strip()}: openreactor serve\n")
+    monkeypatch.setattr(cli, "fetch_status", refused)
+    assert cli.main(["status", "-c", write_config(tmp_path)]) == 1
+    assert "Nothing holds the bus either" in capsys.readouterr().err
+
+
 def test_with_another_controller_on_the_bus_it_names_it(
     tmp_path: Path, lock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):

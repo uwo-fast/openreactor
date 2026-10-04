@@ -128,8 +128,7 @@ class WatchdogStatus:
 
 @dataclass(frozen=True)
 class SliceStatus:
-    """What is known about one slice: from a running controller, or read
-    from the bus by ``probe``."""
+    """What a running controller knows about one slice."""
 
     name: str
     address: int
@@ -140,7 +139,7 @@ class SliceStatus:
     estop: bool | None = None
     outputs: tuple[OutputStatus, ...] = ()
     watchdog: WatchdogStatus | None = None
-    # The setpoints a running controller wants, in °C; None from ``probe``.
+    # The setpoints the controller wants, in °C; None for a slice not in use.
     desired_c: tuple[float, float] | None = None
 
 
