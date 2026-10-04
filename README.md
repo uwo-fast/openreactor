@@ -67,6 +67,7 @@ openreactor export 3                 # write run 3 as run-3.zip
 openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
+openreactor profile validate --dry-run FILE  # check a run profile, print its timeline
 ```
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
@@ -74,6 +75,13 @@ A run records every reading and event (stop-all, failed reads) in SQLite, at
 export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's
 config. If the database fails mid-run (a full disk, say), recording stops and
 the run is marked interrupted; control and stop-all carry on.
+
+A run profile is a TOML schedule of setpoints for the actuated channels: each
+channel's steps `set` a value, `ramp` to one over a duration, `hold`, or turn
+`off`. `openreactor profile validate FILE` checks one, naming each problem's
+place in the file and how to fix it; `-c CONFIG` also checks its channels exist,
+and `--dry-run` prints what happens when. `examples/profiles/ramp-and-hold.toml`
+shows every step. Running a profile comes with the slices.
 
 Calibration points by family:
 

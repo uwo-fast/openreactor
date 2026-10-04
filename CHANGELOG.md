@@ -32,6 +32,9 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   export N` writes a zip of `readings.csv`, `events.csv` and `run.json`. A
   failing write stops recording and marks the run interrupted without
   stopping control.
+- Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
+  channel. `openreactor profile validate` checks one and `--dry-run` prints
+  its timeline; an example is in `examples/profiles/`.
 
 ### Removed
 
