@@ -32,6 +32,7 @@ import errno
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from typing import Protocol
 
 from bread_crumbs_contracts.bread_caps import (
@@ -60,6 +61,7 @@ from bread_crumbs_contracts.rlht_ops import (
     RLHT_CAP_TC_SELECT,
     RLHT_FLAG_ESTOP,
     RLHT_MODE_CLOSED_LOOP,
+    RLHT_MODE_OPEN_LOOP,
     RLHT_MODULE_VER_MAJOR,
     RLHT_MODULE_VER_MINOR,
     RLHT_OP_GET_STATE,
@@ -101,6 +103,84 @@ class SliceError(Exception):
 
 class SendFailed(SliceError):
     """A command that may or may not have reached the slice."""
+
+
+@dataclass(frozen=True)
+class OutputStatus:
+    """One heater output as the slice last reported it."""
+
+    output: int
+    channel: str | None  # the config's channel on this output, if any
+    tc: int
+    temperature_c: float | None  # None: no thermocouple reading
+    setpoint_c: float | None
+    on_ms: int
+    period_ms: int
+
+
+@dataclass(frozen=True)
+class WatchdogStatus:
+    armed: bool
+    timeout_ms: int
+    tripped: bool
+    trip_count: int
+
+
+@dataclass(frozen=True)
+class SliceStatus:
+    """What a running controller knows about one slice."""
+
+    name: str
+    address: int
+    state: str  # "ok", or why it is out of use
+    version: str | None = None  # "RLHT 1.0.0, CRUMBS 0.15.0"
+    caps: int | None = None
+    mode: str | None = None  # "closed loop" or "open loop"
+    estop: bool | None = None
+    outputs: tuple[OutputStatus, ...] = ()
+    watchdog: WatchdogStatus | None = None
+    # The setpoints the controller wants, in °C; None for a slice not in use.
+    desired_c: tuple[float, float] | None = None
+
+
+def _outputs(device: DeviceConfig, state: RlhtStateResult) -> tuple[OutputStatus, ...]:
+    names = {ch.output: ch.name for ch in device.channels}
+
+    def degrees(deci: int) -> float | None:
+        return deci / 10 if bread_is_valid_i16(deci) else None
+
+    return (
+        OutputStatus(
+            1,
+            names.get(1),
+            state.tc1,
+            degrees(state.t1_deci_c),
+            degrees(state.sp1_deci_c),
+            state.on1_ms,
+            state.period1_ms,
+        ),
+        OutputStatus(
+            2,
+            names.get(2),
+            state.tc2,
+            degrees(state.t2_deci_c),
+            degrees(state.sp2_deci_c),
+            state.on2_ms,
+            state.period2_ms,
+        ),
+    )
+
+
+def _mode(state: RlhtStateResult) -> str:
+    if state.mode == RLHT_MODE_CLOSED_LOOP:
+        return "closed loop"
+    if state.mode == RLHT_MODE_OPEN_LOOP:
+        return "open loop"
+    return f"mode {state.mode}"
+
+
+def _watchdog(w: BreadWatchdogResult) -> WatchdogStatus:
+    return WatchdogStatus(bool(w.armed), w.timeout_ms, bool(w.tripped), w.trip_count)
 
 
 class SliceBusy(Exception):
@@ -194,6 +274,8 @@ class RlhtSlice:
         self._drop_result: str | None = None
         self._trip_count = 0
         self._last_state: RlhtStateResult | None = None
+        self._last_watchdog: BreadWatchdogResult | None = None
+        self._version: str | None = None
         self.unreachable = False
         self.estop = False
         # What openreactor wants the setpoints to be, in deci-degrees; set by
@@ -231,6 +313,7 @@ class RlhtSlice:
                 f"runs RLHT {module}; openreactor needs "
                 f"{RLHT_MODULE_VER_MAJOR}.{RLHT_MODULE_VER_MINOR} or a later minor"
             )
+        self._version = f"RLHT {module}, CRUMBS {_crumbs_version(version.crumbs_ver)}"
         caps = bread_caps_parse_payload(self._query(BREAD_OP_GET_CAPS))
         self.caps = caps
 
@@ -239,6 +322,7 @@ class RlhtSlice:
         if caps.flags & RLHT_CAP_CMD_WATCHDOG:
             self.port.send(BREAD_OP_SET_WATCHDOG, rlht_send_set_watchdog(self.watchdog_timeout_ms))
             watchdog = bread_watchdog_parse_payload(self._query(BREAD_OP_GET_WATCHDOG))
+            self._last_watchdog = watchdog
             self._trip_count = watchdog.trip_count
             if not watchdog.armed or watchdog.timeout_ms != self.watchdog_timeout_ms:
                 raise SliceError(
@@ -322,6 +406,35 @@ class RlhtSlice:
             self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0))
         finally:
             self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
+
+    def status(self, why: str | None = None) -> SliceStatus:
+        """What the controller last saw. Called on the controller's thread;
+        ``why`` is the start-up problem of a slice that did not start."""
+        if why is not None:
+            state = why
+        elif not self.started:
+            state = "did not finish start-up"
+        elif self.unreachable:
+            state = f"unreachable: {UNREACHABLE_AFTER} polls failed in a row"
+        elif self.estop:
+            state = "e-stop held on the slice"
+        elif self.read_only:
+            state = "read-only: the slice has no command watchdog"
+        else:
+            state = "ok"
+        last = self._last_state
+        return SliceStatus(
+            self.name,
+            self.device.address,
+            state,
+            version=self._version,
+            caps=self.caps.flags if self.caps else None,
+            mode=_mode(last) if last else None,
+            estop=bool(last.flags & RLHT_FLAG_ESTOP) if last else None,
+            outputs=_outputs(self.device, last) if last else (),
+            watchdog=_watchdog(self._last_watchdog) if self._last_watchdog else None,
+            desired_c=(self.setpoints_deci[0] / 10, self.setpoints_deci[1] / 10),
+        )
 
     def set_setpoint(self, output: int, deci: int) -> None:
         """An operator's setpoint for one output, in tenths of a degree,
@@ -573,6 +686,7 @@ class RlhtSlice:
         """A trip or a reboot means the slice dropped what it was told:
         re-assert it once, and check it took in the next cycle."""
         self._failed_checks = 0
+        self._last_watchdog = watchdog
         against, self._drift_against = self._drift_against, None
         baseline = self._trip_count
         self._trip_count = watchdog.trip_count

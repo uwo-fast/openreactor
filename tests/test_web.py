@@ -915,3 +915,54 @@ def test_status_shows_a_slice_e_stop_and_stop_all_reaches_everything(open_bench)
     assert r.status_code == 409
     assert "e-stop on heater is held" in r.json()["detail"]
     assert bench.rlht.setpoints == [0, 0]
+
+
+def slice_status(client: TestClient) -> dict:
+    return client.get("/api/v1/status").json()["slices"][0]
+
+
+def test_status_shows_each_slice_as_the_controller_sees_it(open_bench):
+    bench, client = open_bench
+    s = slice_status(client)
+    assert (s["name"], s["state"], s["version"]) == ("heater", "ok", "RLHT 1.0.0, CRUMBS 0.15.0")
+    assert s["mode"] == "closed loop" and s["estop"] is False
+    assert s["watchdog"] == {"armed": True, "timeout_ms": 5000, "tripped": False, "trip_count": 0}
+    assert [o["channel"] for o in s["outputs"]] == ["jacket", None]
+    # The watchdog as the latest check read it.
+    bench.rlht.trip()
+    until(lambda: slice_status(client)["watchdog"]["trip_count"] == 1)
+    bench.rlht.flags = 0x01
+    until(lambda: slice_status(client)["state"] == "e-stop held on the slice")
+    bench.rlht.flags = 0
+    until(lambda: slice_status(client)["state"] == "ok")
+    bench.rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")] * 10_000
+    until(lambda: slice_status(client)["state"].startswith("unreachable"))
+
+
+def test_status_shows_a_slice_that_never_answered_or_did_not_start(tmp_path: Path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    bench = Bench(tmp_path / "a", password=False)
+    bench.rlht_address = 0x0B
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        s = slice_status(client)
+    assert s["state"] == "error: no answer on the bus" and s["version"] is None
+    bench = Bench(tmp_path / "b", password=False)
+    bench.rlht.arms = False
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        s = slice_status(client)
+    assert "watchdog did not arm" in s["state"] and s["version"] == "RLHT 1.0.0, CRUMBS 0.15.0"
+
+
+def test_status_survives_a_busy_controller(open_bench, monkeypatch: pytest.MonkeyPatch):
+    from openreactor import service as service_module
+
+    bench, client = open_bench
+    monkeypatch.setattr(service_module, "SLICE_STATUS_TIMEOUT_S", 0.2)
+    svc = bench.app.state.service
+    svc.controller.call(lambda: time.sleep(1.0))  # the controller is busy
+    r = client.get("/api/v1/status")
+    assert r.status_code == 200
+    [s] = r.json()["slices"]
+    assert s["state"] == "unknown: the controller did not answer in time"
+    assert {d["name"] for d in r.json()["devices"]} == {"heater", "air"}

@@ -4,7 +4,9 @@ import argparse
 import contextlib
 import getpass
 import ipaddress
+import json
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -14,7 +16,7 @@ from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from crumbs_i2c import Bus, LinuxBus
 
@@ -56,6 +58,9 @@ sleep: Callable[[float], None] = time.sleep
 
 # The machine-wide controller lock. Tests point it at a temporary file.
 lock_path = LOCK_PATH
+
+# How long status waits for a running server.
+STATUS_TIMEOUT_S = 5.0
 
 
 def open_port(device: DeviceConfig) -> EzoPort:
@@ -575,6 +580,13 @@ def build_parser() -> argparse.ArgumentParser:
     serving.add_argument("--port", type=int, help="the port to bind (default server.port)")
     serving.set_defaults(func=_serve)
 
+    status = commands.add_parser("status", help="show each RLHT slice's state")
+    status.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
+    status.add_argument(
+        "--url", help="a running server's status URL (default: from the config's [server])"
+    )
+    status.set_defaults(func=_status)
+
     hashing = commands.add_parser("hash-password", help="hash a password for server.password_hash")
     hashing.set_defaults(func=_hash_password)
 
@@ -599,6 +611,152 @@ def _loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False  # a host name: it may resolve to anything
+
+
+def fetch_status(url: str, password: str | None) -> dict[str, Any]:
+    """GET a running server's /api/v1/status. Tests replace this."""
+    import urllib.request  # here, not at import: it reads /dev/urandom
+
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    if password is not None:
+        request.add_header("Authorization", f"Bearer {password}")
+    with urllib.request.urlopen(request, timeout=STATUS_TIMEOUT_S) as response:
+        return json.load(response)
+
+
+def _status_url(config: Config) -> str:
+    host = config.server.host
+    # A server bound to every address answers on loopback.
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{config.server.port}/api/v1/status"
+
+
+def _status(args: argparse.Namespace) -> int:
+    """Each RLHT slice's state, from the running server. With no server it
+    reads nothing from the bus: every reply a slice builds feeds its
+    watchdog, so reading a slice after openreactor stopped would keep an
+    armed slice heating for as long as status is run."""
+    import urllib.error
+
+    config = _load(args.config)
+    if config is None:
+        return 1
+    url = args.url or _status_url(config)
+    password = os.environ.get("OPENREACTOR_PASSWORD")
+    try:
+        try:
+            status = fetch_status(url, password)
+        except urllib.error.HTTPError as e:
+            if e.code != 401 or password is not None:
+                raise
+            if not sys.stdin.isatty():
+                print(f"error: {url} needs a password: set OPENREACTOR_PASSWORD", file=sys.stderr)
+                return 1
+            status = fetch_status(url, getpass.getpass("Password: "))
+    except urllib.error.HTTPError as e:
+        why = "the password was refused" if e.code == 401 else f"HTTP {e.code}"
+        print(f"error: {url}: {why}", file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, TimeoutError):
+            print(
+                f"error: the server at {url} did not answer within {STATUS_TIMEOUT_S:g} s",
+                file=sys.stderr,
+            )
+        else:
+            print(f"error: no server answered at {url} ({reason}). {_holder()}", file=sys.stderr)
+        return 1
+    except ValueError:
+        print(f"error: {url} did not answer with JSON", file=sys.stderr)
+        return 1
+    try:
+        _print_server_status(status, url)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        print(f"error: {url} did not answer with an openreactor status", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _holder() -> str:
+    """Who holds the bus, to say why no server answered. Read from the lock
+    file without taking the lock, so a serve starting now is never refused;
+    a holder killed with -9 leaves its line behind, so its pid is checked."""
+    try:
+        text = Path(lock_path).read_text().strip()
+    except OSError:
+        text = ""
+    match = re.search(r"pid (\d+)", text)
+    if match is not None and _alive(int(match.group(1))):
+        return f"{text} holds the bus; for a server on another address, pass --url."
+    return (
+        "Nothing holds the bus either: start openreactor serve. status reads "
+        "only from a server, since reading a slice feeds its watchdog."
+    )
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's process
+    return True
+
+
+def _print_server_status(status: dict[str, Any], url: str) -> None:
+    slices = status.get("slices")
+    devices = status.get("devices", [])
+    if slices is None:
+        print("(the server predates slice detail; its device status follows)")
+        for d in devices:
+            print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
+        print(f"(from the server at {url})")
+        return
+    _print_status(slices)
+    for d in devices:
+        if d["kind"] != "rlht":
+            print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
+    print(f"(from the server at {url})")
+
+
+def _print_status(slices: Sequence[dict[str, Any]]) -> None:
+    for s in slices:
+        version = f"  {s['version']}" if s.get("version") else ""
+        print(f"{s['name']}  0x{s['address']:02X}{version}")
+        if s["state"] != "ok":
+            print(f"  state     {s['state']}")
+        w = s.get("watchdog")
+        if w is not None:
+            armed = f"armed {w['timeout_ms']} ms" if w["armed"] else "disarmed"
+            tripped = ", TRIPPED" if w["tripped"] else ""
+            print(f"  watchdog  {armed}, trips {w['trip_count']}{tripped}")
+        elif s.get("caps") is not None:
+            print("  watchdog  none: the slice has no command watchdog")
+        if s.get("estop") is not None:
+            print(f"  e-stop    {'held' if s['estop'] else 'clear'}")
+        if s.get("mode") is not None:
+            print(f"  mode      {s['mode']}")
+        desired = s.get("desired_c")
+        for o in s.get("outputs", []):
+            label = o["channel"] or f"output {o['output']}"
+            temperature = (
+                f"{o['temperature_c']:6.1f} °C"
+                if o["temperature_c"] is not None
+                else "  no reading"
+            )
+            setpoint = f"{o['setpoint_c']:.1f}" if o["setpoint_c"] is not None else "-"
+            duty = round(100 * o["on_ms"] / o["period_ms"]) if o["period_ms"] else 0
+            wanted = ""
+            if desired is not None and o["setpoint_c"] != desired[o["output"] - 1]:
+                wanted = f"  (wanted {desired[o['output'] - 1]:.1f})"
+            print(
+                f"  {label:<9} {temperature}  setpoint {setpoint:>6}  duty {duty:3d} %"
+                f"  tc {o['tc']}{wanted}"
+            )
 
 
 def _serve(args: argparse.Namespace) -> int:
