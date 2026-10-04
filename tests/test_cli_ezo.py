@@ -1,3 +1,5 @@
+import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -5,7 +7,9 @@ from fakes import FakeClock, FakePort
 
 from openreactor import cli
 from openreactor.config import DeviceConfig
+from openreactor.controller import Event
 from openreactor.ezo import EzoDeviceError, Outcome, Value
+from openreactor.lock import ControllerLock
 
 CONFIG = """
 [[device]]
@@ -34,6 +38,13 @@ kind = "ezo-do"
 bus = "/dev/i2c-1"
 address = 0x61
 """
+
+
+@pytest.fixture(autouse=True)
+def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # The controller lock lives in the per-user state directory by default.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    return tmp_path / "state" / "openreactor"
 
 
 @pytest.fixture
@@ -180,3 +191,60 @@ def test_cal_rejects_nan(config: str, ports, capsys):
     assert cli.main(["ezo", "cal", "-c", config, "ph", "mid", "nan"]) == 2
     assert "finite" in capsys.readouterr().err
     assert not any(s.startswith("cal") for s in ports["ph"].sent)
+
+
+def test_device_commands_refuse_while_another_controller_holds_the_lock(
+    config: str, ports, state: Path, capsys
+):
+    with ControllerLock(state):
+        assert cli.main(["read", "-c", config]) == 1
+        assert cli.main(["ezo", "cal", "-c", config, "ph", "status"]) == 1
+    err = capsys.readouterr().err
+    assert (
+        err.count(f"another controller holds {state / 'openreactor.lock'} (pid {os.getpid()}") == 2
+    )
+    assert all(p.sent == [] for p in ports.values())
+
+
+def test_the_lock_is_released_after_a_command(config: str, ports, state: Path):
+    assert cli.main(["read", "-c", config]) == 0
+    with ControllerLock(state):
+        pass
+
+
+def test_follow_sends_stop_all_on_sigterm_before_closing_the_circuits(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    order: list[str] = []
+    for name, port in ports.items():
+        monkeypatch.setattr(port, "close", lambda n=name: order.append(f"close {n}"))
+    printed = cli._print  # pyright: ignore[reportPrivateUsage]
+
+    def record(item):
+        if isinstance(item, Event):
+            order.append(item.kind)
+        printed(item)
+
+    monkeypatch.setattr(cli, "_print", record)
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if clock.now > 5.0:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+
+    assert cli.main(["read", "--follow", "-c", config]) == 0
+
+    out = capsys.readouterr().out
+    assert out.count("ph                            6.980 pH") >= 2  # cycles at 0, 2 and 4 s
+    assert order[0] == "stop-all"
+    assert sorted(order[1:]) == ["close do", "close ph", "close vessel_temp"]
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def test_once_and_follow_are_exclusive(config: str, ports, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["read", "--once", "--follow", "-c", config])

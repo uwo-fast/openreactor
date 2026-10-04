@@ -22,6 +22,10 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   split-phase so no circuit waits on another, and pH, EC and DO compensate
   with the last RTD temperature. `openreactor read` prints the readings, and
   `openreactor ezo cal` shows, sets and clears calibration.
+- A controller that owns the bus: a 100 ms tick that never waits on a
+  device, stop-all on the next tick, EZO commands that run between reads
+  instead of during them, and a lock file so only one controller runs.
+  `openreactor read` reads once by default; `read --follow` streams.
 
 ### Removed
 

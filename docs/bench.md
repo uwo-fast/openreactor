@@ -22,11 +22,11 @@ With every EZO circuit in I2C mode and listed in the config. Temperature
 compensation uses the `RT` command, which needs pH firmware V2.12 or later and
 DO firmware V2.13 or later; record each circuit's firmware (`i`) in the row.
 
-1. `openreactor read --once` prints one line per channel, and exits 0. pH, EC
+1. `openreactor read` prints one line per channel, and exits 0. pH, EC
    and DO show `(compensated at … °C)` when their config names an RTD in
    `temp_comp`.
 2. With an EZO-HUM, enable all three outputs (`O,T,1` and `O,Dew,1`) and
-   check `read --once` prints humidity, air temperature and dew point. No
+   check `openreactor read` prints humidity, air temperature and dew point. No
    vendor example shows the three-value reply, so only a real circuit can
    confirm ezo-driver parses it.
 3. Check what the datasheets leave open: whether an RTD in °F or K expects its

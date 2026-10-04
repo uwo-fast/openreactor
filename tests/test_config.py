@@ -382,3 +382,13 @@ def test_rejects_a_bus_that_is_not_linux_i2c(bus: str):
     data = config()
     data["device"][2]["bus"] = bus
     assert problems(data) == [f"device[2].bus: {bus!r} is not a Linux I2C bus such as /dev/i2c-1"]
+
+
+def test_state_dir_must_be_absolute():
+    assert parse_config(
+        config(controller={"state_dir": "/var/lib/openreactor"})
+    ).controller.state_dir == ("/var/lib/openreactor")
+    assert parse_config(config()).controller.state_dir is None
+    assert problems(config(controller={"state_dir": "state"})) == [
+        "controller.state_dir: must be an absolute path"
+    ]

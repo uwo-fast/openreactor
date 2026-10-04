@@ -6,6 +6,7 @@ from ezo_driver import enums
 from fakes import FakeClock, FakePort
 
 from openreactor.config import DeviceConfig
+from openreactor.controller import Controller
 from openreactor.ezo import (
     FAMILIES,
     EzoChannel,
@@ -44,6 +45,20 @@ def by_channel(results):
     return {r.channel: r for r in results}
 
 
+def _controller(r: EzoReader) -> Controller:
+    # The reader's own fake clock drives the controller too.
+    return Controller(r, ezo_period_s=2.0, clock=r._clock, sleep=r._sleep)  # pyright: ignore[reportPrivateUsage]
+
+
+def cycle(r: EzoReader):
+    c = _controller(r)
+    return c.wait(c.read_cycle())
+
+
+def once(r: EzoReader):
+    return _controller(r).read_once()
+
+
 # Reading
 
 
@@ -61,7 +76,7 @@ def test_split_phase_sends_every_read_before_reading_any():
         sleep=clock.sleep,
     )
 
-    results = r.run_cycle()
+    results = cycle(r)
 
     # Each circuit is read when its own delay is up, and the slowest one
     # sets the cycle time: the waits do not add up.
@@ -79,8 +94,8 @@ def test_cached_output_mask_is_passed_to_every_read():
     port = FakePort("do", (Value("mg_l", 8.1, "mg/L"),), config=0b11)
     r, _ = reader((device("do", "ezo-do", 0x61), port))
     assert r.prepare() == []
-    r.run_cycle()
-    r.run_cycle()
+    cycle(r)
+    cycle(r)
     assert port.configs_used == [0b11, 0b11]
 
 
@@ -93,7 +108,7 @@ def test_read_once_compensates_with_this_readings_rtd_temperature():
         (device("t", "ezo-rtd", 0x66), rtd), (device("ph", "ezo-ph", 0x63, temp_comp="t"), ph)
     )
 
-    results = by_channel(r.read_once())
+    results = by_channel(once(r))
 
     assert ph.read_temperatures == [25.0]
     assert rtd.read_temperatures == [None]
@@ -108,8 +123,8 @@ def test_a_cycle_compensates_with_the_last_rtd_value():
         (device("t", "ezo-rtd", 0x66), rtd), (device("ph", "ezo-ph", 0x63, temp_comp="t"), ph)
     )
 
-    r.run_cycle()  # no RTD value yet
-    r.run_cycle()  # sent before this cycle's RTD reading arrives
+    cycle(r)  # no RTD value yet
+    cycle(r)  # sent before this cycle's RTD reading arrives
 
     assert ph.read_temperatures == [None, 25.0]
 
@@ -117,8 +132,8 @@ def test_a_cycle_compensates_with_the_last_rtd_value():
 def test_no_compensation_without_temp_comp():
     rtd, ph = FakePort("rtd", RTD), FakePort("ph", PH)
     r, _ = reader((device("t", "ezo-rtd", 0x66), rtd), (device("ph", "ezo-ph", 0x63), ph))
-    r.read_once()
-    r.run_cycle()
+    once(r)
+    cycle(r)
     assert ph.read_temperatures == [None, None]
 
 
@@ -129,9 +144,9 @@ def test_a_failed_rtd_read_clears_its_temperature():
         (device("t", "ezo-rtd", 0x66), rtd), (device("ph", "ezo-ph", 0x63, temp_comp="t"), ph)
     )
 
-    r.read_once()  # RTD 25.0, pH compensated at 25.0
-    r.run_cycle()  # pH still sent 25.0; the RTD fails
-    third = by_channel(r.run_cycle())
+    once(r)  # RTD 25.0, pH compensated at 25.0
+    cycle(r)  # pH still sent 25.0; the RTD fails
+    third = by_channel(cycle(r))
 
     assert ph.read_temperatures == [25.0, 25.0, None]
     assert third["ph"].compensation_missing
@@ -147,7 +162,7 @@ def test_compensation_missing_only_for_channels_that_compensate():
         (device("orp", "ezo-orp", 0x62), orp),
     )
 
-    results = by_channel(r.read_once())
+    results = by_channel(once(r))
 
     assert results["ph"].compensation_missing
     assert not results["orp"].compensation_missing
@@ -174,7 +189,7 @@ def test_not_ready_is_read_again_a_full_delay_later_without_a_new_read():
     r, (ph, orp), trace = traced(("ph", "ezo-ph", 0x63, PH), ("orp", "ezo-orp", 0x62, ORP))
     ph.replies.append(Outcome.NOT_READY)
 
-    results = r.run_cycle()
+    results = cycle(r)
 
     assert trace == [
         ("send ph", 0.0),
@@ -195,7 +210,7 @@ def test_not_ready_twice_is_reported_and_nothing_is_left_pending():
     r, (ph, orp), _ = traced(("ph", "ezo-ph", 0x63, PH), ("orp", "ezo-orp", 0x62, ORP))
     ph.replies.extend([Outcome.NOT_READY, Outcome.NOT_READY])
 
-    results = r.run_cycle()
+    results = cycle(r)
 
     assert sorted((x.channel, x.outcome) for x in results) == [
         ("orp", Outcome.OK),
@@ -203,7 +218,7 @@ def test_not_ready_twice_is_reported_and_nothing_is_left_pending():
     ]
     assert r.next_due() is None
     # The next cycle starts afresh with one new read each.
-    assert sorted((x.channel, x.outcome) for x in r.run_cycle()) == [
+    assert sorted((x.channel, x.outcome) for x in cycle(r)) == [
         ("orp", Outcome.OK),
         ("ph", Outcome.OK),
     ]
@@ -216,7 +231,7 @@ def test_a_circuit_that_is_never_ready_does_not_duplicate_the_others():
     ph.replies.extend([Outcome.NOT_READY] * 6)
 
     for _ in range(3):
-        results = r.run_cycle()
+        results = cycle(r)
         assert sorted((x.channel, x.outcome) for x in results) == [
             ("orp", Outcome.OK),
             ("ph", Outcome.NOT_READY),
@@ -232,7 +247,7 @@ def test_fail_and_no_data_are_reported_without_a_retry(outcome: Outcome):
     port.replies.append(outcome)
     r, _ = reader((device("ph", "ezo-ph", 0x63), port), (device("orp", "ezo-orp", 0x62), other))
 
-    results = by_channel(r.run_cycle())
+    results = by_channel(cycle(r))
 
     assert results["ph"].outcome is outcome
     assert results["orp"].outcome is Outcome.OK
@@ -244,7 +259,7 @@ def test_a_failed_send_is_reported_and_others_still_read():
     port.send_error = EzoDeviceError("transport failure")
     r, _ = reader((device("ph", "ezo-ph", 0x63), port), (device("orp", "ezo-orp", 0x62), other))
 
-    results = by_channel(r.run_cycle())
+    results = by_channel(cycle(r))
 
     assert results["ph"].outcome is Outcome.ERROR
     assert results["ph"].detail == "transport failure"
@@ -271,7 +286,7 @@ def test_prepare_disables_a_circuit_of_the_wrong_type():
     assert problems[0].channel == "ph"
     assert problems[0].outcome is Outcome.ERROR
     assert problems[0].detail == "config says ezo-ph, the circuit reports 'orp'"
-    results = by_channel(r.run_cycle())
+    results = by_channel(cycle(r))
     assert "ph" not in results
     assert "read" not in wrong.sent
     assert results["orp"].outcome is Outcome.OK

@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from openreactor.config import I2C_BUS, DeviceConfig
 
@@ -68,6 +68,8 @@ FAMILIES: dict[str, Family] = {
     "ezo-do": Family("do", True, {"atmospheric": False, "zero": False}, 20.0),
     "ezo-hum": Family("hum", False, {"temperature": True}),
 }
+
+_T = TypeVar("_T")
 
 # What an EZO-RTD reads with no probe connected.
 RTD_NO_PROBE = -1023.0
@@ -151,7 +153,8 @@ class EzoReader:
 
     ``begin`` sends a read to every circuit that has none outstanding, and
     re-arms a circuit that answered NOT_READY so it is read again one delay
-    later. ``collect`` reads the circuits whose delay is up. pH, EC and DO
+    later. ``collect`` reads the circuits whose delay is up. Neither waits; the
+    controller decides when to call them. pH, EC and DO
     compensate with the last temperature read from the RTD named in their
     ``temp_comp``; a failed RTD read clears that temperature.
     """
@@ -197,20 +200,37 @@ class EzoReader:
         source = ch.device.temp_comp
         return self._temperatures.get(source) if source is not None else None
 
+    def pending(self) -> set[str]:
+        """Circuits with a read outstanding, including NOT_READY retries."""
+        return set(self._pending)
+
+    def waiting(self) -> set[str]:
+        """Circuits that answered NOT_READY and wait to be re-armed."""
+        return {name for name, p in self._pending.items() if p.waiting_for_cycle}
+
+    def rearm(self) -> None:
+        """Read again, one delay from now, every circuit that answered
+        NOT_READY. ``begin`` does this at the start of each cycle."""
+        self._rearm(self._clock())
+
     def _rearm(self, now: float) -> None:
         for pending in self._pending.values():
             if pending.waiting_for_cycle:
                 pending.waiting_for_cycle = False
                 pending.due = now + pending.wait_s
 
-    def begin(self, names: Iterable[str] | None = None) -> list[Result]:
-        """Start a cycle. Returns the circuits whose read could not be sent."""
+    def begin(self, names: Iterable[str] | None = None, skip: Iterable[str] = ()) -> list[Result]:
+        """Start a cycle for ``names`` (default all), leaving out ``skip``.
+        Returns the circuits whose read could not be sent."""
         now = self._clock()
         self._rearm(now)
         wanted = set(names) if names is not None else None
+        skipped = set(skip)
         failed: list[Result] = []
         for ch in self.channels:
             if not ch.enabled or (wanted is not None and ch.name not in wanted):
+                continue
+            if ch.name in skipped:
                 continue
             if ch.name in self._pending:
                 continue
@@ -247,7 +267,8 @@ class EzoReader:
         now = self._clock()
         results: list[Result] = []
         for name, pending in list(self._pending.items()):
-            if pending.waiting_for_cycle or pending.due > now:
+            # A microsecond's grace, so a read due at a tick is read on it.
+            if pending.waiting_for_cycle or pending.due > now + 1e-6:
                 continue
             ch = self._by_name[name]
             try:
@@ -274,58 +295,36 @@ class EzoReader:
             results.append(self._result(ch, pending, Outcome.OK, values=values))
         return results
 
-    def _drain(self) -> list[Result]:
-        results: list[Result] = []
-        while (due := self.next_due()) is not None:
-            self._sleep(max(0.0, due - self._clock()))
-            results += self.collect()
-        return results
 
-    def run_cycle(self, names: Iterable[str] | None = None) -> list[Result]:
-        """Blocking cycle for the CLI: send, wait for each delay, and read.
-        A circuit that answers NOT_READY is read once more, a full delay
-        later, without a new read; nothing is left outstanding afterwards."""
-        results = self.begin(names)
-        results += self._drain()
-        if self._pending:
-            self._rearm(self._clock())
-            results += self._drain()
-        return results
-
-    def read_once(self) -> list[Result]:
-        """Read every circuit once. RTDs used for compensation are read first,
-        so pH, EC and DO compensate with this reading's temperature."""
-        sources = {
-            ch.device.temp_comp
-            for ch in self.channels
-            if ch.enabled and ch.family.temp_comp and ch.device.temp_comp
-        }
-        first = self.run_cycle(sources) if sources else []
-        rest = self.run_cycle(n for n in self._by_name if n not in sources)
-        order = {name: i for i, name in enumerate(self._by_name)}
-        return sorted(first + rest, key=lambda r: order[r.channel])
+# Multi-step commands are generators: each yields how long to wait, in
+# seconds, before it may continue, and returns its result. run_steps drives
+# one with sleep for the CLI; the controller resumes it on later ticks.
+Steps = Generator[float, None, _T]
 
 
-def run_command(port: EzoPort, send: Callable[[], int], sleep: Callable[[float], None]) -> None:
+def run_steps(steps: Steps[_T], sleep: Callable[[float], None] = time.sleep) -> _T:
+    try:
+        while True:
+            sleep(next(steps))
+    except StopIteration as done:
+        return done.value
+
+
+def command_steps(port: EzoPort, send: Callable[[], int]) -> Steps[None]:
     """Send a command, wait its delay, and check the circuit accepted it."""
-    sleep(send() / 1000)
+    yield send() / 1000
     port.read_ack()
 
 
-def calibration_status(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> str:
-    sleep(port.send_calibration_query() / 1000)
+def calibration_status_steps(port: EzoPort) -> Steps[str]:
+    yield port.send_calibration_query() / 1000
     return port.read_calibration_status()
 
 
-def calibrate(
-    family: Family,
-    port: EzoPort,
-    point: str,
-    value: float | None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
+def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | None) -> Steps[None]:
     """Calibrate one point. EC and DO are first put back to their default
-    compensation temperature, as their datasheets require."""
+    compensation temperature, as their datasheets require. The arguments are
+    checked before anything is sent."""
     if point not in family.points:
         raise ValueError(
             f"{family.name} has no calibration point {point!r}; "
@@ -340,12 +339,30 @@ def calibrate(
         raise ValueError(f"the reference value must be a finite number, not {value}")
     if family.calibration_temp_c is not None:
         temperature = family.calibration_temp_c
-        run_command(port, lambda: port.send_temperature(temperature), sleep)
-    run_command(port, lambda: port.send_calibration(point, value), sleep)
+        yield from command_steps(port, lambda: port.send_temperature(temperature))
+    yield from command_steps(port, lambda: port.send_calibration(point, value))
+
+
+def clear_calibration_steps(port: EzoPort) -> Steps[None]:
+    yield from command_steps(port, port.send_calibration_clear)
+
+
+def calibration_status(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> str:
+    return run_steps(calibration_status_steps(port), sleep)
+
+
+def calibrate(
+    family: Family,
+    port: EzoPort,
+    point: str,
+    value: float | None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    run_steps(calibrate_steps(family, port, point, value), sleep)
 
 
 def clear_calibration(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> None:
-    run_command(port, port.send_calibration_clear, sleep)
+    run_steps(clear_calibration_steps(port), sleep)
 
 
 # ezo-driver translation, kept as plain functions so the tests can check them

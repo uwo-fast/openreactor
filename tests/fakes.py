@@ -116,3 +116,17 @@ class FakePort:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeActuator:
+    """An output that records each safe-state command."""
+
+    def __init__(self, name: str, log: list[str] | None = None, fail: Exception | None = None):
+        self.name = name
+        self.log = log if log is not None else []
+        self.fail = fail
+
+    def send_safe(self) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.log.append(f"safe {self.name}")
