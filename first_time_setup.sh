@@ -3,9 +3,6 @@
 # Quit script if there are any errors
 set -e
 
-# Update all submodules
-git submodule update --init --recursive
-
 # Install needed dependancies
 sudo apt update; sudo apt upgrade -y
 sudo apt install -y python3-venv sqlite3 npm

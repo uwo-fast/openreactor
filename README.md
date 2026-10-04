@@ -41,7 +41,6 @@ To update your repository with the lasest remote changes use:
 
 ```sh
 git pull --all
-git submodule foreach git pull
 ```
 
 ### Resetting python enviroment when done running
