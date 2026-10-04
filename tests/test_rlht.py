@@ -970,3 +970,16 @@ def test_a_setpoint_is_refused_while_a_drift_is_being_checked():
     assert events(seen, "slice-setpoints-changed")
     s.set_setpoint(1, 410)
     assert rlht.setpoints == [410, 0]
+
+
+def test_with_checks_failing_a_setpoint_is_not_told_a_check_is_pending():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.corrupt_replies = {GET_WATCHDOG}
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EIO, "I/O error")
+    rlht.setpoints = [500, 0]  # set by something else; the safe state fails
+    tick(c, clock, 10.0)
+    # The send is what fails, and that is what the operator is told.
+    with pytest.raises(SendFailed):
+        s.set_setpoint(1, 400)

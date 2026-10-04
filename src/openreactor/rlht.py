@@ -536,6 +536,7 @@ class RlhtSlice:
             self._drift_against = list(self.setpoints_deci)
             self._check_owed = True
             return []
+        self._drift_against = None  # dropped now: no check is pending
         return self._drop(state)
 
     def _drop(self, state: RlhtStateResult) -> list[Result | Event]:
