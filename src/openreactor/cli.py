@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import ipaddress
 import os
@@ -98,7 +99,8 @@ def run_server(app: FastAPI, host: str, port: int) -> None:
     shown = f"[{host}]" if ":" in host else host
     print(f"serving on http://{shown}:{port}; Ctrl-C to stop", file=sys.stderr, flush=True)
     config = uvicorn.Config(app, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
-    with sock:
+    # uvicorn re-raises Ctrl-C once it has shut down cleanly.
+    with sock, contextlib.suppress(KeyboardInterrupt):
         Server(config).run(sockets=[sock])
 
 
