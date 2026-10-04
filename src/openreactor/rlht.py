@@ -188,6 +188,10 @@ class RlhtSlice:
         self._check_owed = False
         self._confirming = False
         self._failed_checks = 0
+        # The desired setpoints the last GET_STATE disagreed with, if it did.
+        self._drift_against: list[int] | None = None
+        # The last drop's result, so a drop that keeps failing is told once.
+        self._drop_result: str | None = None
         self._trip_count = 0
         self._last_state: RlhtStateResult | None = None
         self.unreachable = False
@@ -518,8 +522,11 @@ class RlhtSlice:
         check finds those and re-asserts. So the check comes next, and if it
         finds neither, ``_supervise`` drops the setpoints."""
         if not self._drift(state):
+            self._drift_against = None
+            self._drop_result = None
             return []
         if self.protected and self._failed_checks < UNREACHABLE_AFTER:
+            self._drift_against = list(self.setpoints_deci)
             self._check_owed = True
             return []
         return self._drop(state)
@@ -537,6 +544,9 @@ class RlhtSlice:
         except (CrumbsError, OSError) as e:
             self.setpoints_deci = [0, 0]
             result = f"error: safe state not sent: {_describe(e)}"
+        if result == self._drop_result:
+            return []  # retried each poll; told once
+        self._drop_result = result
         return [
             Event(
                 self._wall(),
@@ -555,6 +565,7 @@ class RlhtSlice:
         """A trip or a reboot means the slice dropped what it was told:
         re-assert it once, and check it took in the next cycle."""
         self._failed_checks = 0
+        against, self._drift_against = self._drift_against, None
         baseline = self._trip_count
         self._trip_count = watchdog.trip_count
         confirming, self._confirming = self._confirming, False
@@ -571,8 +582,12 @@ class RlhtSlice:
                 f"trips {baseline} -> {watchdog.trip_count})"
             )
         else:
+            # Only if the desired setpoints are still the ones that GET_STATE
+            # disagreed with: one set since is judged by the next GET_STATE.
             last = self._last_state
-            return self._drop(last) if last is not None and self._drift(last) else []
+            if last is None or against is None or against != self.setpoints_deci:
+                return []
+            return self._drop(last)
         if confirming:
             # The last re-assert did not take. Say so, and wait for the next
             # scheduled check rather than re-asserting at once.

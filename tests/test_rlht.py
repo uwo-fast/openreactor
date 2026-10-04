@@ -857,6 +857,11 @@ def test_setpoints_lost_with_no_trip_or_reboot_are_dropped_not_resumed():
     tick(c, clock, 6.0)
     assert events(seen, "slice-trip")[-1].result == "re-asserted"
     assert rlht.setpoints == [0, 0]
+    # A later change is a new one, and told again.
+    s.set_setpoint(1, 300)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.5)
+    assert len(events(seen, "slice-setpoints-changed")) == 2
 
 
 def test_setpoints_a_trip_zeroed_are_re_asserted_at_the_next_poll():
@@ -906,3 +911,36 @@ def test_a_read_only_slice_running_its_own_setpoints_is_left_alone():
     rlht.commands.clear()
     tick(c, clock, 3.0)
     assert not events(seen, "slice-setpoints-changed") and rlht.commands == []
+
+
+def test_a_setpoint_set_at_any_tick_is_never_taken_for_drift():
+    # Set between a GET_STATE and the GET_WATCHDOG after it, a setpoint must
+    # not be judged against that older GET_STATE.
+    for offset in range(100):
+        rlht = FakeRlht()
+        s, clock = started(rlht)
+        c, seen = controller_for(s, clock)
+        tick(c, clock, offset / 10)
+        c.call(lambda s=s: s.set_setpoint(1, 400))
+        tick(c, clock, 3.0)
+        assert not events(seen, "slice-setpoints-changed"), f"dropped at tick {offset}"
+        assert rlht.setpoints == [400, 0] and s.setpoints_deci == [400, 0]
+
+
+def test_a_drop_that_keeps_failing_is_retried_each_poll_but_told_once():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EIO, "I/O error")
+    rlht.setpoints = [500, 0]  # set by something else
+    tick(c, clock, 10.0)
+    [failed] = events(seen, "slice-setpoints-changed")
+    assert failed.result.startswith("error: safe state not sent")
+    assert ops(rlht).count(SET_OPEN_DUTY) >= 8  # the safe state, tried each poll
+    del rlht.fail_opcodes[SET_SETPOINTS]
+    tick(c, clock, 3.0)
+    assert [e.result for e in events(seen, "slice-setpoints-changed")] == [
+        failed.result,
+        "safe state sent",
+    ]
+    assert rlht.setpoints == [0, 0]
