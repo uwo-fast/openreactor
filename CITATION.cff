@@ -12,6 +12,8 @@ authors:
     given-names: "Wilson J."
   - family-names: "Hafting"
     given-names: "Finn"
+  - family-names: "Pearce"
+    given-names: "Joshua M."
 url: "https://github.com/uwo-fast/openreactor"
 repository-code: "https://github.com/uwo-fast/openreactor"
 license: AGPL-3.0-or-later
