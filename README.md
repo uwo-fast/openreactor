@@ -97,9 +97,13 @@ A failed read is retried twice in the same poll; after 3 failed
 polls in a row the slice shows as unreachable until it answers again. An e-stop
 pressed on a slice sends stop-all, and its setpoints stay at zero until the
 operator sets them again. Stop-all sends every slice its safe state, and its
-setpoints stay at zero the same way. Until feastorg/Slice_RLHT#13
-is fixed, that does not turn a running heater off at once: the slice keeps its
-PID integral, so the output decays to off over seconds (#51).
+setpoints stay at zero the same way. Slice_RLHT firmware before 16a04dd keeps
+its PID integral through it, so a running heater decays to off over seconds.
+From 16a04dd (feastorg/Slice_RLHT#13) its on-time is 0 at the next control
+step, as a host check shows; the bench row in `docs/bench.md` is to confirm the
+relay. openreactor cannot tell which a slice runs, since the version reply is
+the same for both (feastorg/bread-crumbs-contracts#23), so flash 16a04dd or
+later (#51).
 
 An RLHT channel's setpoint is set from the API
 (`PUT /api/v1/channels/<name>/setpoint`) or the Controls page, in °C to the
