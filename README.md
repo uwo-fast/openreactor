@@ -50,12 +50,17 @@ with `pre-commit install`.
 ## Command line
 
 The device commands read `/etc/openreactor/openreactor.toml` unless given
-`-c FILE`.
+`-c FILE`. They go through one controller that owns the bus, and only one can
+run at a time on a machine, whichever user runs it: each holds
+`/run/lock/openreactor.lock`, and a second command refuses, naming the
+holder's user and pid. Ctrl-C and SIGTERM send stop-all before the bus is
+closed; an interrupted `read` or `ezo cal` exits 130 and sends nothing more to
+the circuit.
 
 ```sh
 openreactor check-config FILE        # validate a config file
-openreactor read --once              # read every EZO sensor once
-openreactor read                     # read them every ezo_period_s until Ctrl-C
+openreactor read                     # read every EZO sensor once
+openreactor read --follow            # read them every ezo_period_s until Ctrl-C
 openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
@@ -73,8 +78,7 @@ Calibration points by family:
 Before calibrating, the command checks the circuit at that address is the
 family the config names. EC and DO are first set back to their default
 compensation temperature (25 °C and 20 °C), as their datasheets require; the
-next `read` sends the measured temperature again. Don't run `ezo cal` while a
-`read` is running against the same circuits.
+next `read` sends the measured temperature again.
 
 ## Contributing
 

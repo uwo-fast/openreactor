@@ -1,11 +1,16 @@
+import getpass
+import os
+import signal
+import sys
 from pathlib import Path
 
 import pytest
-from fakes import FakeClock, FakePort
+from fakes import FakeActuator, FakeClock, FakePort
 
 from openreactor import cli
 from openreactor.config import DeviceConfig
 from openreactor.ezo import EzoDeviceError, Outcome, Value
+from openreactor.lock import ControllerLock
 
 CONFIG = """
 [[device]]
@@ -34,6 +39,14 @@ kind = "ezo-do"
 bus = "/dev/i2c-1"
 address = 0x61
 """
+
+
+@pytest.fixture(autouse=True)
+def lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # The machine-wide lock lives in /run/lock; tests use their own file.
+    path = tmp_path / "openreactor.lock"
+    monkeypatch.setattr(cli, "lock_path", path)
+    return path
 
 
 @pytest.fixture
@@ -180,3 +193,135 @@ def test_cal_rejects_nan(config: str, ports, capsys):
     assert cli.main(["ezo", "cal", "-c", config, "ph", "mid", "nan"]) == 2
     assert "finite" in capsys.readouterr().err
     assert not any(s.startswith("cal") for s in ports["ph"].sent)
+
+
+def test_device_commands_refuse_while_another_controller_holds_the_lock(
+    config: str, ports, lock: Path, capsys
+):
+    with ControllerLock(lock):
+        assert cli.main(["read", "-c", config]) == 1
+        assert cli.main(["ezo", "cal", "-c", config, "ph", "status"]) == 1
+    err = capsys.readouterr().err
+    holder = f"another controller holds {lock} ({getpass.getuser()}, pid {os.getpid()}"
+    assert err.count(holder) == 2
+    assert all(p.sent == [] for p in ports.values())
+
+
+def test_the_lock_is_released_after_a_command(config: str, ports, lock: Path):
+    assert cli.main(["read", "-c", config]) == 0
+    with ControllerLock(lock):
+        pass
+
+
+def test_follow_sends_stop_all_on_sigterm_before_closing_the_circuits(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    order: list[str] = []
+    for name, port in ports.items():
+        monkeypatch.setattr(port, "close", lambda n=name: order.append(f"close {n}"))
+    monkeypatch.setattr(cli, "actuators", lambda c: [FakeActuator("heater", order)])
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if clock.now > 5.0:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+
+    assert cli.main(["read", "--follow", "-c", config]) == 0
+
+    out = capsys.readouterr().out
+    assert out.count("ph                            6.980 pH") >= 2  # cycles at 0, 2 and 4 s
+    assert "stop-all heater: ok" in out
+    assert order[0] == "safe heater"
+    assert sorted(order[1:]) == ["close do", "close ph", "close vessel_temp"]
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def test_sigterm_during_calibration_sends_no_further_command(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+    port = ports["do"]
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if "temperature 20.0" in port.sent:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+
+    assert cli.main(["ezo", "cal", "-c", config, "do", "zero"]) == 130
+    assert port.sent[-1] == "temperature 20.0"
+    assert not any(s.startswith("cal") for s in port.sent)
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_ctrl_c_during_read_once_exits_130(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if clock.now > 0.5:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+    assert cli.main(["read", "-c", config]) == 130
+    assert all(p.closed for p in ports.values())
+
+
+def test_sigterm_arriving_inside_the_printer_still_stops_follow(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch
+):
+    # Listener errors are isolated so a broken printer cannot stop control;
+    # SIGTERM must not be mistaken for one.
+    real = cli._print  # pyright: ignore[reportPrivateUsage]
+    sent = {"done": False}
+
+    def printer(item):
+        if not sent["done"]:
+            sent["done"] = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        real(item)
+
+    monkeypatch.setattr(cli, "_print", printer)
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        assert clock.now < 30, "follow kept running after SIGTERM"
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+    assert cli.main(["read", "--follow", "-c", config]) == 0
+
+
+def test_follow_stops_quietly_when_its_reader_goes_away(
+    config: str, ports, monkeypatch: pytest.MonkeyPatch
+):
+    printed = {"n": 0}
+    real = cli._print  # pyright: ignore[reportPrivateUsage]
+
+    def fragile(item):
+        printed["n"] += 1
+        if printed["n"] > 2:
+            raise BrokenPipeError
+        real(item)
+
+    monkeypatch.setattr(cli, "_print", fragile)
+    dup2: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "dup2", lambda a, b: dup2.append((a, b)))
+    assert cli.main(["read", "--follow", "-c", config]) == 0
+    assert dup2 and dup2[0][1] == sys.stdout.fileno()
+    assert all(p.closed for p in ports.values())
+
+
+def test_once_and_follow_are_exclusive(config: str, ports, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["read", "--once", "--follow", "-c", config])

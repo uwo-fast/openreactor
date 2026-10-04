@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from types import FrameType
 
 from openreactor import __version__
 from openreactor.config import Config, ConfigError, DeviceConfig, load_config
+from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
     FAMILIES,
     DriverPort,
@@ -17,21 +22,32 @@ from openreactor.ezo import (
     EzoStatusError,
     Outcome,
     Result,
-    calibrate,
-    calibration_status,
-    clear_calibration,
+    calibrate_steps,
+    calibration_status_steps,
+    clear_calibration_steps,
 )
+from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
 
 DEFAULT_CONFIG = "/etc/openreactor/openreactor.toml"
 
-# The time source for reads. Tests replace both with a fake clock.
+# The time source for the controller. Tests replace both with a fake clock.
 clock: Callable[[], float] = time.monotonic
 sleep: Callable[[float], None] = time.sleep
+
+
+# The machine-wide controller lock. Tests point it at a temporary file.
+lock_path = LOCK_PATH
 
 
 def open_port(device: DeviceConfig) -> EzoPort:
     """Open one EZO circuit. Tests replace this with a fake."""
     return DriverPort(device.kind, device.bus, device.address)
+
+
+def actuators(config: Config) -> list[Actuator]:
+    """The outputs stop-all makes safe. The slices add theirs in #24 and #25;
+    tests replace this with fakes."""
+    return []
 
 
 def _load(path: str) -> Config | None:
@@ -55,37 +71,107 @@ def check_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_results(results: Sequence[Result]) -> None:
-    for r in results:
-        if r.outcome is not Outcome.OK:
-            detail = f": {r.detail}" if r.detail else ""
-            print(f"{r.channel:<24} {r.outcome.value}{detail}")
-            continue
-        for v in r.values:
-            label = f"{r.channel}.{v.field}" if v.field else r.channel
-            line = f"{label:<24} {v.value:>10.3f} {v.unit}".rstrip()
-            if r.temperature_c is not None:
-                line += f"  (compensated at {r.temperature_c:.2f} °C)"
-            elif r.compensation_missing:
-                line += "  (no RTD temperature: the circuit used the last one it was given)"
-            print(line)
+def _print(item: Result | Event) -> None:
+    if isinstance(item, Event):
+        where = f" {item.device}" if item.device else ""
+        detail = f" ({item.details})" if item.details else ""
+        print(f"{item.kind}{where}: {item.result}{detail}", flush=True)
+        return
+    if item.outcome is not Outcome.OK:
+        detail = f": {item.detail}" if item.detail else ""
+        print(f"{item.channel:<24} {item.outcome.value}{detail}", flush=True)
+        return
+    for v in item.values:
+        label = f"{item.channel}.{v.field}" if v.field else item.channel
+        line = f"{label:<24} {v.value:>10.3f} {v.unit}".rstrip()
+        if item.temperature_c is not None:
+            line += f"  (compensated at {item.temperature_c:.2f} °C)"
+        elif item.compensation_missing:
+            line += "  (no RTD temperature: the circuit used the last one it was given)"
+        print(line, flush=True)
 
 
-def _open_channels(devices: Sequence[DeviceConfig]) -> tuple[list[EzoChannel], list[Result]]:
-    channels: list[EzoChannel] = []
-    problems: list[Result] = []
-    for d in devices:
+class _Stop(BaseException):
+    """SIGTERM, handled like Ctrl-C: nothing on the way catches it as an
+    ordinary error."""
+
+
+def _on_sigterm(signum: int, frame: FrameType | None) -> None:
+    raise _Stop
+
+
+@contextmanager
+def _controller(
+    config: Config, devices: Sequence[DeviceConfig], *, auto_read: bool = False
+) -> Iterator[tuple[Controller, list[Result]]]:
+    """Take the lock, open the circuits, check them, and yield a controller
+    with the startup problems. On the way out, even on Ctrl-C or SIGTERM,
+    stop-all is sent before the circuits are closed."""
+    with ControllerLock(lock_path):
+        channels: list[EzoChannel] = []
+        problems: list[Result] = []
         try:
-            channels.append(EzoChannel(d, open_port(d)))
-        except EzoDeviceError as e:
-            problems.append(Result(d.name, Outcome.ERROR, detail=str(e)))
-    return channels, problems
+            for d in devices:
+                try:
+                    channels.append(EzoChannel(d, open_port(d)))
+                except EzoDeviceError as e:
+                    problems.append(Result(d.name, Outcome.ERROR, detail=str(e)))
+            reader = EzoReader(channels, clock=clock, sleep=sleep)
+            problems += reader.prepare()
+            controller = Controller(
+                reader,
+                actuators(config),
+                ezo_period_s=config.controller.ezo_period_s,
+                auto_read=auto_read,
+                clock=clock,
+                sleep=sleep,
+            )
+            try:
+                yield controller, problems
+            finally:
+                controller.close()
+        finally:
+            for ch in channels:
+                ch.port.close()
 
 
-def read(args: argparse.Namespace) -> int:
-    config = _load(args.config)
-    if config is None:
-        return 1
+def _device_command(run: Callable[[argparse.Namespace, Config], int]):
+    """Load the config, then run a device command, turning a held lock or an
+    unusable state directory into an error and SIGTERM into Ctrl-C."""
+
+    def command(args: argparse.Namespace) -> int:
+        config = _load(args.config)
+        if config is None:
+            return 1
+        previous = signal.signal(signal.SIGTERM, _on_sigterm)
+        try:
+            return run(args, config)
+        except LockHeld as e:
+            print(
+                f"error: another controller holds {e.path} ({e.holder}); "
+                "stop it first, or wait for it to finish",
+                file=sys.stderr,
+            )
+            return 1
+        except BrokenPipeError:
+            # The reader of our output went away (read --follow | head).
+            return 0
+        except OSError as e:
+            where = f"{e.filename}: " if e.filename else ""
+            print(f"error: {where}{e.strerror or e}", file=sys.stderr)
+            return 1
+        except (KeyboardInterrupt, _Stop):
+            if getattr(args, "follow", False):
+                return 0  # Ctrl-C is how --follow is meant to end
+            print("interrupted", file=sys.stderr)
+            return 130
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
+    return command
+
+
+def _read(args: argparse.Namespace, config: Config) -> int:
     devices = [d for d in config.devices if d.kind in FAMILIES]
     skipped = [d.name for d in config.devices if d.kind not in FAMILIES]
     if not devices:
@@ -94,36 +180,33 @@ def read(args: argparse.Namespace) -> int:
     if skipped:
         print(f"note: not reading {', '.join(skipped)}: slices are not read yet", file=sys.stderr)
 
-    channels, problems = _open_channels(devices)
-    try:
-        reader = EzoReader(channels, clock=clock, sleep=sleep)
-        problems += reader.prepare()
-        _print_results(problems)
-        if args.once:
-            results = reader.read_once()
-            _print_results(results)
-            failed = problems or any(r.outcome is not Outcome.OK for r in results)
-            return 1 if failed else 0
-        period = config.controller.ezo_period_s
-        started = clock()
-        results = reader.read_once()
-        while True:
-            _print_results(results)
-            print(flush=True)
-            sleep(max(0.0, started + period - clock()))
-            started = clock()
-            results = reader.run_cycle()
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        for ch in channels:
-            ch.port.close()
+    with _controller(config, devices, auto_read=args.follow) as (controller, problems):
+        for problem in problems:
+            _print(problem)
+        if args.follow:
+            closed = False
+
+            def show(item: Result | Event) -> None:
+                nonlocal closed
+                try:
+                    _print(item)
+                except BrokenPipeError:
+                    # The reader went away (read --follow | head): stop, and
+                    # send what is left, the stop-all report, nowhere.
+                    closed = True
+                    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+            controller.subscribe(show)
+            controller.run(lambda: closed)
+            return 0
+        results = controller.read_once()
+        for result in results:
+            _print(result)
+        failed = problems or any(r.outcome is not Outcome.OK for r in results)
+        return 1 if failed else 0
 
 
-def ezo_cal(args: argparse.Namespace) -> int:
-    config = _load(args.config)
-    if config is None:
-        return 1
+def _ezo_cal(args: argparse.Namespace, config: Config) -> int:
     device = next((d for d in config.devices if d.name == args.device), None)
     if device is None or device.kind not in FAMILIES:
         print(f"error: {args.device!r} is not an EZO device in {args.config}", file=sys.stderr)
@@ -140,40 +223,40 @@ def ezo_cal(args: argparse.Namespace) -> int:
         )
         return 2
 
-    try:
-        port = open_port(device)
-    except EzoDeviceError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    try:
-        # Calibrating the wrong circuit would corrupt it, so check its type first.
-        problems = EzoReader([EzoChannel(device, port)], clock=clock, sleep=sleep).prepare()
+    with _controller(config, [device]) as (controller, problems):
+        # Calibrating the wrong circuit would corrupt it, so the startup type
+        # check has to pass first.
         if problems:
-            _print_results(problems)
+            for problem in problems:
+                _print(problem)
             return 1
-        if action == "clear":
-            clear_calibration(port, sleep)
-        elif action != "status":
-            calibrate(family, port, action, args.value, sleep)
-            if family.name == "ph" and action == "mid":
-                print(
-                    "note: a mid-point calibration clears the low and high points; "
-                    "calibrate those after it",
-                    file=sys.stderr,
-                )
-        print(f"{device.name}: {calibration_status(port, sleep)}")
+        port = controller.reader.channels[0].port
+        try:
+            if action == "clear":
+                controller.wait(controller.run_job(device.name, clear_calibration_steps(port)))
+            elif action != "status":
+                steps = calibrate_steps(family, port, action, args.value)
+                controller.wait(controller.run_job(device.name, steps))
+                if family.name == "ph" and action == "mid":
+                    print(
+                        "note: a mid-point calibration clears the low and high points; "
+                        "calibrate those after it",
+                        file=sys.stderr,
+                    )
+            status = controller.wait(
+                controller.run_job(device.name, calibration_status_steps(port))
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        except EzoStatusError as e:
+            print(f"error: {device.name} reported {e.outcome.value}", file=sys.stderr)
+            return 1
+        except EzoDeviceError as e:
+            print(f"error: {device.name}: {e}", file=sys.stderr)
+            return 1
+        print(f"{device.name}: {status}")
         return 0
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-    except EzoStatusError as e:
-        print(f"error: {device.name} reported {e.outcome.value}", file=sys.stderr)
-        return 1
-    except EzoDeviceError as e:
-        print(f"error: {device.name}: {e}", file=sys.stderr)
-        return 1
-    finally:
-        port.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,8 +274,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     reading = commands.add_parser("read", help="read the EZO sensors")
     reading.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
-    reading.add_argument("--once", action="store_true", help="read once and exit")
-    reading.set_defaults(func=read)
+    mode = reading.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="read every sensor once (default)")
+    mode.add_argument("--follow", action="store_true", help="read every ezo_period_s until Ctrl-C")
+    reading.set_defaults(func=_device_command(_read))
 
     ezo = commands.add_parser("ezo", help="EZO circuit tools")
     ezo_commands = ezo.add_subparsers(dest="ezo_command", required=True, metavar="COMMAND")
@@ -208,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
         "value", nargs="?", type=float, help="the reference value, if the point takes one"
     )
     cal.add_argument("--yes", action="store_true", help="confirm clearing the calibration")
-    cal.set_defaults(func=ezo_cal)
+    cal.set_defaults(func=_device_command(_ezo_cal))
     return parser
 
 
