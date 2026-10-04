@@ -16,10 +16,6 @@ htmlcov/
 *.db
 /data/
 
-# 1.x, until it is removed from main
-experiments/*.json
-node_modules/
-
 # Editors / IDEs
 .idea/
 .vs/

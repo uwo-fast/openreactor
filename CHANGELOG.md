@@ -14,3 +14,10 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
 ### Added
 
 - Python packaging, linting, type-checking, tests and CI.
+- A TOML configuration file that lists every device, validated before
+  anything starts: `openreactor check-config <file>`. A commented example is
+  in `examples/openreactor.toml`.
+
+### Removed
+
+- The 1.x application. It stays on the `1.x` branch and its tags.

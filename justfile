@@ -32,9 +32,9 @@ check: fmt-check lint typecheck
 test:
     uv run pytest
 
-# Run openreactor
-run:
-    uv run python -c "import openreactor; print('openreactor', openreactor.__version__)"
+# Run openreactor, for example: just run check-config examples/openreactor.toml
+run *args:
+    uv run openreactor {{args}}
 
 # Build the sdist and wheel into dist/
 build:

@@ -1,6 +1,6 @@
 [project]
 name = "openreactor"
-version = "2.0.0.dev0"
+version = "2.0.0a1"
 description = "Supervise benchtop lab reactors from a Raspberry Pi: temperature, mixing, dosing and water chemistry, with recorded runs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,9 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = []
+
+[project.scripts]
+openreactor = "openreactor.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/uwo-fast/openreactor"
@@ -36,7 +39,6 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# The 1.x code stays on main until it is removed, and is not linted.
 include = ["src/**/*.py", "tests/**/*.py"]
 
 [tool.ruff.lint]
