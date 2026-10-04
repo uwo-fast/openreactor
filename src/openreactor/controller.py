@@ -186,7 +186,9 @@ class Controller:
             events.append(
                 Event(self._wall(), source, "stop-all", details="no actuators configured")
             )
-        if future is not None:
+        if future is not None and future.set_running_or_notify_cancel():
+            # A caller may cancel its stop-all future; the safe states have
+            # still been sent, and the events are still published.
             future.set_result(events)
         for event in events:
             self._publish(event)

@@ -426,3 +426,19 @@ def test_overlapping_read_cycles_each_get_one_result_per_circuit():
     assert [r.channel for r in first.result()] == ["ph"]
     assert [r.channel for r in second.result()] == ["ph"]
     assert port.sent.count("read") == 1
+
+
+def test_a_cancelled_stop_all_still_makes_safe_and_reports():
+    log: list[str] = []
+    seen: list[Result | Event] = []
+    c, clock = setup(actuators=[FakeActuator("heater", log)])
+    c.subscribe(seen.append)
+    future = c.stop_all()
+    assert future.cancel()
+
+    tick(c, clock)
+    events = c.close()
+
+    assert log == ["safe heater", "safe heater"]
+    assert [e.source for e in seen if isinstance(e, Event)] == ["user", "system"]
+    assert [e.result for e in events] == ["ok"]
