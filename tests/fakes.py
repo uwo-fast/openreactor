@@ -168,8 +168,11 @@ class FakeRlht:
         # OSError fails the next read or write with it.
         self.faults: list[str | OSError] = []
         self.fail_opcodes: dict[int, BaseException] = {}
+        # Replies to these opcodes read as all 0xFF while GET_STATE still works.
+        self.corrupt_replies: set[int] = set()
         # GET_STATE replies served: the firmware feeds its watchdog on each.
         self.state_replies = 0
+        self.watchdog_replies = 0
 
     def write(self, frame: bytes) -> None:
         from crumbs_i2c import decode
@@ -185,6 +188,9 @@ class FakeRlht:
             self.staged = message.data[0]
             return
         self.commands.append((message.opcode, bytes(message.data)))
+        # As the firmware does (feastorg/Slice_RLHT#9): any command frame
+        # clears a trip; SET_REPLY does not.
+        self.tripped = 0
         op, data = message.opcode, message.data
         if op == 0x7E and self.arms:  # SET_WATCHDOG
             self.timeout_ms = int.from_bytes(data[:2], "little")
@@ -199,6 +205,22 @@ class FakeRlht:
             self.periods = [int.from_bytes(data[i : i + 2], "little") for i in (0, 2)]
         elif op == 0x05:
             self.tc = [data[0], data[1]]
+
+    def trip(self) -> None:
+        """The command watchdog expiring, as watchdogLogic() does it."""
+        self.tripped = 1
+        self.trip_count = (self.trip_count + 1) % 256
+        self.setpoints = [0, 0]
+
+    def reboot(self) -> None:
+        """A power-cycle: the watchdog boots disarmed and its count at 0."""
+        self.armed = 0
+        self.timeout_ms = 0
+        self.tripped = 0
+        self.trip_count = 0
+        self.setpoints = [0, 0]
+        self.mode = 0
+        self.tc = [1, 2]
 
     def reply(self) -> bytes:
         import struct
@@ -233,6 +255,10 @@ class FakeRlht:
             return b"\xff" * count
         if self.staged == 0x80:
             self.state_replies += 1
+        elif self.staged == 0x7D:
+            self.watchdog_replies += 1
+        if self.staged in self.corrupt_replies:
+            return b"\xff" * count
         frame = encode(Message(self.type_id, self.staged, self.reply()))
         return (frame + b"\xff" * count)[:count]
 

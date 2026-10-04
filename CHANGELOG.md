@@ -50,6 +50,13 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   per channel). GET_STATE every `slice_poll_s` keeps the watchdog fed and
   reports each channel's temperature, setpoint and duty. Stop-all sends both
   stop ops to every slice.
+- RLHT supervision: GET_WATCHDOG after every fifth poll detects a trip
+  (tripped, or a changed trip count) or a reboot (disarmed) and re-asserts
+  the desired state, checked at the next poll; 3 failed watchdog reads in a
+  row are logged; a slice e-stop or stop-all
+  zeroes the setpoints and nothing resumes; a failed read is retried twice per poll, and 3 failed polls
+  mark the slice unreachable. Each is an event in the run and shows in
+  `/status`.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.

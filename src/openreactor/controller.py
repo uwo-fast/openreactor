@@ -61,9 +61,11 @@ Listener = Callable[["Result | Event"], None]
 
 class Polled(Protocol):
     """A device the controller polls each tick: it does whatever is due at
-    ``now`` without waiting, and returns what it read."""
+    ``now`` without waiting, and returns what it read and what it saw. An
+    ``e-stop`` event with result ``held`` (a slice's own e-stop pressed)
+    makes the controller send stop-all."""
 
-    def advance(self, now: float) -> list[Result]: ...
+    def advance(self, now: float) -> list[Result | Event]: ...
 
 
 @dataclass
@@ -185,8 +187,13 @@ class Controller:
         if self._closed:
             return
         for device in self.polled:
-            for result in device.advance(now):
-                self._publish(result)
+            items = device.advance(now)
+            for item in items:
+                self._publish(item)
+            if any(
+                isinstance(i, Event) and i.kind == "e-stop" and i.result == "held" for i in items
+            ):
+                self._stop_all("slice")
 
     def _drain_commands(self) -> None:
         while True:
