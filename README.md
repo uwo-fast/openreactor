@@ -104,7 +104,8 @@ An RLHT channel's setpoint is set from the API
 (`PUT /api/v1/channels/<name>/setpoint`) or the Controls page, in °C to the
 slice's tenth of a degree: from 0 up to the channel's `max_setpoint`, or
 3276.7 °C when the config sets none. It is refused while the slice's e-stop
-is held or the slice is read-only (409), and while it is unreachable or did
+is held, the slice is read-only, or a change in its setpoints is being
+checked (409, for a moment; see below), and while it is unreachable or did
 not finish start-up (503). A send that fails answers 502, since the slice may
 have taken it. Each one sent, or tried, is an event in the run. It stays the
 desired setpoint, sent again after a trip or a reboot, until it is set again

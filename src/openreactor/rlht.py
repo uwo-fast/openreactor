@@ -338,6 +338,13 @@ class RlhtSlice:
             )
         if self.unreachable:
             raise SliceError(f"{self.name} is unreachable: {UNREACHABLE_AFTER} polls failed")
+        if self._drift_against is not None:
+            # Until the check says why, a new setpoint would be judged against
+            # a stale reading, and would carry the other output's old one.
+            raise SliceBusy(
+                f"{self.name} runs other setpoints than wanted, and is being checked; "
+                "set it again in a moment"
+            )
         wanted = list(self.setpoints_deci)
         wanted[output - 1] = deci
         try:

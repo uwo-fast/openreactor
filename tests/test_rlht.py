@@ -944,3 +944,29 @@ def test_a_drop_that_keeps_failing_is_retried_each_poll_but_told_once():
         "safe state sent",
     ]
     assert rlht.setpoints == [0, 0]
+
+
+def test_a_setpoint_is_refused_while_a_drift_is_being_checked():
+    # After an e-stop tap no poll saw, a setpoint for one output must not
+    # restart the other: it waits for the check.
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    s.set_setpoint(2, 300)
+    rlht.setpoints = [0, 0]
+    refused = False
+    for _ in range(20):
+        tick(c, clock, 0.1)
+        try:
+            s.set_setpoint(1, 410)
+        except SliceBusy as e:
+            assert "being checked" in str(e)
+            refused = True
+            break
+        rlht.setpoints = [0, 0]  # accepted before the drift was seen: tap again
+    assert refused
+    tick(c, clock, 1.0)
+    assert events(seen, "slice-setpoints-changed")
+    s.set_setpoint(1, 410)
+    assert rlht.setpoints == [410, 0]
