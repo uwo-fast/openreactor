@@ -556,8 +556,9 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
     @app.post("/logout", status_code=204, include_in_schema=False)
     def logout(request: Request) -> Response:
         # Another site, or another service on this host, cannot sign you out.
-        _check_origin(request, by_cookie=True)
-        app.state.gate.sign_out(request.session.get("id"))
+        session = request.session.get("id")
+        _check_origin(request, by_cookie=app.state.gate.signed_in(session))
+        app.state.gate.sign_out(session)
         request.session.clear()
         if wants_html(request):
             return RedirectResponse("/login", status_code=303)

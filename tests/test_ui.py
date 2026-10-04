@@ -247,6 +247,16 @@ def test_signing_out_from_another_site_is_refused(locked_ui):
     assert client.get("/", follow_redirects=False).status_code == 200
 
 
+def test_signing_out_without_a_session_needs_no_origin(locked_ui):
+    _, client = locked_ui
+    assert client.post("/logout").status_code == 204
+
+
+def test_signing_out_with_no_password_needs_no_origin(ui):
+    _, client = ui
+    assert client.post("/logout").status_code == 204
+
+
 def test_no_page_can_be_framed_by_another_site(ui):
     _, client = ui
     for path in ["/", "/runs", "/api/v1/status", "/static/app.js"]:
