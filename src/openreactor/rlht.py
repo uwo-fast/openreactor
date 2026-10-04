@@ -393,6 +393,8 @@ class RlhtSlice:
                 return []
             if self._failed_checks > UNREACHABLE_AFTER:
                 return []
+            # Any confirm pending is lost with it; the next check is fresh.
+            self._confirming = False
             return [
                 Event(
                     self._wall(),

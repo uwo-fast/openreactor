@@ -613,6 +613,26 @@ def test_a_reboot_while_unreachable_is_re_asserted_even_with_a_confirm_pending()
     assert reboot.result == "re-asserted" and rlht.armed == 1
 
 
+def test_a_reboot_after_failed_checks_is_re_asserted_even_with_a_confirm_pending():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.trip()
+    tick(c, clock, 4.5)  # the fifth poll re-asserts; its confirm is pending
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    rlht.corrupt_replies = {GET_WATCHDOG}
+    for _ in range(50):  # until the confirm and the next two checks fail
+        tick(c, clock, 0.1)
+        if events(seen, "slice-unchecked"):
+            break
+    assert events(seen, "slice-unchecked")
+    rlht.corrupt_replies = set()
+    rlht.reboot()
+    tick(c, clock, 5.0)  # the next scheduled check answers
+    [reboot] = events(seen, "slice-reboot")
+    assert reboot.result == "re-asserted" and rlht.armed == 1
+
+
 def test_a_check_that_answers_starts_the_count_of_failed_checks_again():
     rlht = FakeRlht()
     s, clock = started(rlht)
