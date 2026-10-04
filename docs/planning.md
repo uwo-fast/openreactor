@@ -1,6 +1,6 @@
 # Planning & Future Developments
 
-This is the current plan for future development of this application, this should be reviewed and opened for feedback then turned into a development [roadmap](roadmap.md).
+This is the current plan for future development of this application, this should be reviewed and opened for feedback then turned into a development roadmap.
 
 ## Cam's Thoughts
 

@@ -243,3 +243,6 @@ dist
 
 # Experiment records written at runtime
 experiments/*.json
+
+# macOS folder metadata
+.DS_Store
