@@ -658,6 +658,48 @@ def test_a_port_in_use_is_an_error_before_any_device_opens(tmp_path: Path, monke
     assert opened == []
 
 
+def start_server(tmp_path: Path, config: str):
+    import socket
+    import subprocess
+    import sys
+    import urllib.request
+
+    with socket.create_server(("127.0.0.1", 0)) as probe:
+        port = probe.getsockname()[1]
+    launch = (
+        "import sys; from pathlib import Path; from openreactor import cli; "
+        f"cli.lock_path = Path({str(tmp_path / 'openreactor.lock')!r}); "
+        "cli.GRACEFUL_SHUTDOWN_S = 1; sys.exit(cli.main(sys.argv[1:]))"
+    )
+    server = subprocess.Popen(
+        [sys.executable, "-c", launch, "serve", "-c", config, "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    def up() -> bool:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/status", timeout=1)
+            return True
+        except OSError:
+            return False
+
+    until(up, timeout_s=15)
+    return server, port
+
+
+def test_ctrl_c_stops_serve_cleanly(tmp_path: Path):
+    import signal
+
+    server, _ = start_server(tmp_path, write_config(tmp_path, password=False))
+    server.send_signal(signal.SIGINT)
+    _, err = server.communicate(timeout=10)
+    assert server.returncode == 0, err
+    assert "Traceback" not in err
+    assert "Application shutdown complete" in err
+
+
 def test_sigterm_sends_stop_all_at_once_even_with_a_slow_client(tmp_path: Path):
     """A client that never finishes its request must not hold back
     stop-all, nor keep the run from being ended."""
