@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}openreactor{% endblock %}</title>
+  <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav class="navbar navbar-expand bg-body-tertiary border-bottom">
+    <div class="container-fluid flex-wrap gap-2">
+      <a class="navbar-brand" href="/">openreactor</a>
+      {% if path != "/login" %}
+      <ul class="navbar-nav me-auto flex-wrap">
+        {% for href, label in [("/", "Dashboard"), ("/controls", "Controls"), ("/runs", "Runs"), ("/devices", "Devices"), ("/about", "About")] %}
+        <li class="nav-item"><a class="nav-link{% if path == href %} active{% endif %}" href="{{ href }}">{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+      <div class="d-flex gap-2">
+        <button class="btn btn-danger fw-bold" hx-post="/ui/stop-all" hx-target="#notice">Stop all</button>
+        {% if signed_in %}
+        <form method="post" action="/logout"><button class="btn btn-outline-secondary">Sign out</button></form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </nav>
+  <main class="container py-3">
+    <div id="notice" aria-live="polite"></div>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="container py-3 text-body-secondary small border-top">
+    openreactor {{ version }} · <a href="{{ source_url }}">source code</a> · AGPL-3.0-or-later
+  </footer>
+</body>
+</html>

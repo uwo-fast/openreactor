@@ -79,6 +79,12 @@ export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's
 config. If the database fails mid-run (a full disk, say), recording stops and
 the run is marked interrupted; control and stop-all carry on.
 
+`openreactor serve` also serves the operator's browser UI at `/`: a
+dashboard with live values and charts, controls, runs (start, stop, export),
+EZO calibration, and an about page, with Stop all on every page. It loads
+nothing from the internet; the few browser files it uses are vendored, as
+[VENDORED.md](VENDORED.md) describes.
+
 `openreactor serve` runs the controller with the HTTP API at `/api/v1`:
 status, live channels, setpoints, runs and their export, stop-all and EZO
 calibration. It holds the same lock as the other device commands. SIGTERM

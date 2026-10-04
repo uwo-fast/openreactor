@@ -36,6 +36,10 @@ test:
 run *args:
     uv run openreactor {{args}}
 
+# Download the browser files in static/vendor/vendor.toml and record their hashes
+vendor:
+    uv run python scripts/vendor.py
+
 # Build the sdist and wheel into dist/
 build:
     uv build

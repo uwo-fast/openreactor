@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block head %}<script src="/static/vendor/chart.umd.min.js" defer></script>{% endblock %}
+{% block content %}
+<h1 class="h4">Dashboard</h1>
+<p>
+  {% if run %}Run {{ run }} is recording{% if recording_failed %}, but recording stopped: {{ recording_failed }}. Stop it on the <a href="/runs">Runs</a> page{% endif %}.
+  {% else %}No run is recording. Start one on the <a href="/runs">Runs</a> page.{% endif %}
+</p>
+<div class="row g-3">
+  <section class="col-lg-5">
+    <h2 class="h6">Live values</h2>
+    <div hx-get="/ui/channels" hx-trigger="load, every 2s">Reading…</div>
+    <h2 class="h6 mt-3">Devices</h2>
+    <ul class="list-unstyled small">
+      {% for d in devices %}<li><strong>{{ d.name }}</strong> ({{ d.kind }}): {{ d.status }}</li>{% endfor %}
+    </ul>
+  </section>
+  <section class="col-lg-7">
+    <h2 class="h6">Since this page opened</h2>
+    <div id="charts" class="row g-2" data-source="/api/v1/channels"></div>
+  </section>
+</div>
+{% endblock %}

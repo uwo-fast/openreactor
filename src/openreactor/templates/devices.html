@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Devices · openreactor{% endblock %}
+{% block content %}
+<h1 class="h4">Devices</h1>
+<table class="table table-sm">
+  <thead><tr><th>Device</th><th>Kind</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for d in devices %}<tr><td>{{ d.name }}</td><td>{{ d.kind }}</td><td>{{ d.status }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+
+{% for d in ezo %}
+<section class="card mb-3">
+  <div class="card-body">
+    <h2 class="h6 card-title">{{ d.name }} ({{ d.kind }}) calibration</h2>
+    <div class="mb-2" hx-get="/ui/ezo/{{ d.name }}/calibration" hx-trigger="load, changed from:body">Asking the circuit…</div>
+    <form class="row g-2" hx-post="/ui/ezo/{{ d.name }}/calibration" hx-target="#notice" hx-confirm="Calibrate {{ d.name }} now? On pH, a mid calibration erases the low and high points.">
+      <div class="col-sm-4">
+        <select class="form-select" name="point" aria-label="Calibration point for {{ d.name }}">
+          {% for p in d.points %}<option value="{{ p.name }}">{{ p.name }}{% if not p.needs_value %} (no value){% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-sm-4"><input class="form-control" name="value" type="number" step="any" placeholder="Reference value" aria-label="Reference value for {{ d.name }}"></div>
+      <div class="col-sm-2"><button class="btn btn-primary w-100">Calibrate</button></div>
+      <div class="col-sm-2">
+        <button class="btn btn-outline-danger w-100" type="button" hx-post="/ui/ezo/{{ d.name }}/calibration/clear" hx-target="#notice" hx-confirm="Erase every calibration point on {{ d.name }}?">Clear</button>
+      </div>
+    </form>
+  </div>
+</section>
+{% else %}
+<p class="text-body-secondary">The config has no EZO devices.</p>
+{% endfor %}
+{% endblock %}

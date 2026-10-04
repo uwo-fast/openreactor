@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}About · openreactor{% endblock %}
+{% block content %}
+<h1 class="h4">About</h1>
+<p>openreactor {{ version }} supervises a benchtop lab reactor.</p>
+
+<h2 class="h6">Licence</h2>
+<p>
+  openreactor is free software: you can redistribute it and/or modify it under
+  the terms of the GNU Affero General Public License as published by the Free
+  Software Foundation, either version 3 of the License, or (at your option) any
+  later version. It is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+  for more details.
+</p>
+<p>
+  Under that licence you may have the source code of the version you are using:
+  it is at <a href="{{ source_url }}">{{ source_url }}</a>. If you run a modified
+  version for others over a network, you must offer them its source the same way.
+</p>
+
+<h2 class="h6">Included software</h2>
+<p>These are shipped with openreactor so the interface works without the internet:</p>
+<ul>
+  {% for v in vendored %}
+  <li>{{ v.package }} {{ v.version }}, {{ v.licence }} licence</li>
+  {% endfor %}
+</ul>
+{% endblock %}

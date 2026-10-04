@@ -1,0 +1,56 @@
+# Browser files shipped inside the package, so the UI works with no internet.
+#
+# Each path is relative to this directory. To update one: change its version
+# below, run `just vendor`, and commit the files with the new hashes it writes
+# here. Never edit a vendored file; style and behaviour of our own go in
+# ../app.css and ../app.js. The tests check every file still matches its
+# sha256, and the About page lists what is here. A new [[file]] needs a
+# sha256 line too, empty until `just vendor` fills it. See VENDORED.md.
+
+[[file]]
+package = "bootstrap"
+version = "5.3.8"
+licence = "MIT"
+url = "https://cdn.jsdelivr.net/npm/bootstrap@{version}/dist/css/bootstrap.min.css"
+path = "bootstrap.min.css"
+sha256 = "d85327d99c7a3ee1f9b5d0500d1370acea3ad2db39c163c2f51f232baedbdede"
+
+[[file]]
+package = "bootstrap"
+version = "5.3.8"
+licence = "MIT"
+url = "https://cdn.jsdelivr.net/npm/bootstrap@{version}/LICENSE"
+path = "LICENSE.bootstrap"
+sha256 = "4620c84ad5ce8602ff65640ed6b7c8b78ebb9e036584f0ebc1ccc88206a4bb51"
+
+[[file]]
+package = "htmx.org"
+version = "2.0.11"
+licence = "0BSD"
+url = "https://cdn.jsdelivr.net/npm/htmx.org@{version}/dist/htmx.min.js"
+path = "htmx.min.js"
+sha256 = "d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717"
+
+[[file]]
+package = "htmx.org"
+version = "2.0.11"
+licence = "0BSD"
+url = "https://cdn.jsdelivr.net/npm/htmx.org@{version}/LICENSE"
+path = "LICENSE.htmx"
+sha256 = "d3d2456f76414f2456104660ebd65aff1c04cd7966b942bdabd63f3cdb316a38"
+
+[[file]]
+package = "chart.js"
+version = "4.5.1"
+licence = "MIT"
+url = "https://cdn.jsdelivr.net/npm/chart.js@{version}/dist/chart.umd.min.js"
+path = "chart.umd.min.js"
+sha256 = "48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a"
+
+[[file]]
+package = "chart.js"
+version = "4.5.1"
+licence = "MIT"
+url = "https://cdn.jsdelivr.net/npm/chart.js@{version}/LICENSE.md"
+path = "LICENSE.chartjs"
+sha256 = "41a84aa2caba645f966a18d9c2056b73e6d3a81d80bc0046bc0011a2634d4cce"

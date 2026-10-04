@@ -37,6 +37,11 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   loopback address unless `server.password_hash` is set
   (`openreactor hash-password`); browsers sign in for a session cookie and
   scripts send `Authorization: Bearer`.
+- A browser UI from `openreactor serve`: a dashboard with live values and
+  charts, controls, runs, EZO calibration and an about page, with Stop all on
+  every page and a sign-in page when a password is set. It works offline:
+  Bootstrap, htmx and Chart.js are vendored, recorded with their hashes in
+  `static/vendor/vendor.toml` and updated with `just vendor`.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.
