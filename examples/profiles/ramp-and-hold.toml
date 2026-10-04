@@ -1,0 +1,29 @@
+# A run profile for the channels in examples/openreactor.toml. Check it with
+#   openreactor profile validate --dry-run -c examples/openreactor.toml \
+#     examples/profiles/ramp-and-hold.toml
+
+version = 1
+name = "Ramp and hold"
+notes = "Warm the jacket to 37 °C over 30 minutes, hold for two hours."
+
+# Each channel's steps run in order from the start:
+#   { set = 30.0 }                   the value, at once
+#   { ramp = 37.0, over = "30m" }    a straight line to the value; add
+#                                    from = 25.0 to start somewhere else
+#   { hold = "2h" }                  keep what is there
+#   { off = true }                   the channel's safe state
+# Durations: s, m or h, such as "45s", "2m" or "1.5h". When the profile ends
+# or is aborted, every channel in it goes to its safe state.
+[channels]
+jacket = [
+  { set = 30.0 },
+  { ramp = 37.0, over = "30m" },
+  { hold = "2h" },
+  { off = true },
+]
+stirrer = [
+  { set = 120 },
+  { hold = "10m" },
+  { ramp = 300, over = "5m" },
+  { hold = "135m" },
+]

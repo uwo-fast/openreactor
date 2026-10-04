@@ -30,6 +30,8 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
+from openreactor.profile import ProfileError, load_profile, timeline
+from openreactor.profile import clock as profile_clock
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
 DEFAULT_CONFIG = "/etc/openreactor/openreactor.toml"
@@ -72,6 +74,33 @@ def check_config(args: argparse.Namespace) -> int:
         return 1
     channels = sum(max(len(d.channels), 1) for d in config.devices)
     print(f"{args.config}: OK, {len(config.devices)} device(s), {channels} channel(s)")
+    return 0
+
+
+def _profile_validate(args: argparse.Namespace) -> int:
+    channels = None
+    if args.config is not None:
+        config = _load(args.config)
+        if config is None:
+            return 1
+        channels = {ch.name for d in config.devices for ch in d.channels}
+    try:
+        profile = load_profile(args.profile, channels)
+    except ProfileError as e:
+        for problem in e.problems:
+            print(f"{args.profile}: {problem}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"error: {args.profile}: {e.strerror or e}", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        for line in timeline(profile):
+            print(line)
+        return 0
+    print(
+        f"{args.profile}: OK, {profile.name!r}, {len(profile.channels)} channel(s), "
+        f"{profile_clock(profile.duration)}"
+    )
     return 0
 
 
@@ -450,6 +479,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cal.add_argument("--yes", action="store_true", help="confirm clearing the calibration")
     cal.set_defaults(func=_device_command(_ezo_cal))
+
+    profile = commands.add_parser("profile", help="run profile tools")
+    profile_commands = profile.add_subparsers(
+        dest="profile_command", required=True, metavar="COMMAND"
+    )
+    validate = profile_commands.add_parser("validate", help="check a profile file and exit")
+    validate.add_argument("profile", help="path to the TOML profile")
+    validate.add_argument("-c", "--config", help="also check its channels against this config file")
+    validate.add_argument(
+        "--dry-run", action="store_true", help="print what happens when, then exit"
+    )
+    validate.set_defaults(func=_profile_validate)
     return parser
 
 
