@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import ipaddress
 import os
 import signal
 import sqlite3
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
+from typing import TYPE_CHECKING
 
 from openreactor import __version__
+from openreactor.auth import hash_password
 from openreactor.config import Config, ConfigError, DeviceConfig, load_config
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
@@ -34,6 +38,11 @@ from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from openreactor.service import Service
+
 DEFAULT_CONFIG = "/etc/openreactor/openreactor.toml"
 
 # The time source for the controller. Tests replace both with a fake clock.
@@ -54,6 +63,43 @@ def actuators(config: Config) -> list[Actuator]:
     """The outputs stop-all makes safe. The slices add theirs in #24 and #25;
     tests replace this with fakes."""
     return []
+
+
+# How long, after SIGINT or SIGTERM, requests in progress may take to
+# finish. Stop-all is sent at once regardless; this bounds how long a slow
+# client can keep a run from being ended and the circuits closed.
+GRACEFUL_SHUTDOWN_S = 5
+
+
+def run_server(app: FastAPI, host: str, port: int) -> None:
+    """Serve ``app`` until SIGINT or SIGTERM. Tests replace this. One
+    process: the controller and its lock live in it.
+
+    The port is bound before the app starts, so a port in use is an error
+    before any device is opened."""
+    import socket
+
+    import uvicorn
+
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        sock = socket.create_server((host, port), family=family)
+    except OSError as e:
+        raise OSError(e.errno, e.strerror, f"{host}:{port}") from None
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+            # Stop-all before uvicorn waits for open connections to close.
+            stop_now = getattr(app.state, "stop_now", None)
+            if stop_now is not None:
+                stop_now()
+            super().handle_exit(sig, frame)
+
+    shown = f"[{host}]" if ":" in host else host
+    print(f"serving on http://{shown}:{port}; Ctrl-C to stop", file=sys.stderr, flush=True)
+    config = uvicorn.Config(app, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    with sock:
+        Server(config).run(sockets=[sock])
 
 
 def _load(path: str) -> Config | None:
@@ -480,6 +526,15 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--yes", action="store_true", help="confirm clearing the calibration")
     cal.set_defaults(func=_device_command(_ezo_cal))
 
+    serving = commands.add_parser("serve", help="serve the web API until Ctrl-C")
+    serving.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
+    serving.add_argument("--host", help="the address to bind (default server.host)")
+    serving.add_argument("--port", type=int, help="the port to bind (default server.port)")
+    serving.set_defaults(func=_serve)
+
+    hashing = commands.add_parser("hash-password", help="hash a password for server.password_hash")
+    hashing.set_defaults(func=_hash_password)
+
     profile = commands.add_parser("profile", help="run profile tools")
     profile_commands = profile.add_subparsers(
         dest="profile_command", required=True, metavar="COMMAND"
@@ -492,6 +547,78 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.set_defaults(func=_profile_validate)
     return parser
+
+
+def _loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # a host name: it may resolve to anything
+
+
+def _serve(args: argparse.Namespace) -> int:
+    config = _load(args.config)
+    if config is None:
+        return 1
+    host = args.host or config.server.host
+    port = args.port or config.server.port
+    if config.server.password_hash is None and not _loopback(host):
+        print(
+            f"error: refusing to serve on {host} without a password: anyone on the network "
+            "could control the reactor. Set server.password_hash (openreactor hash-password), "
+            "or serve on 127.0.0.1.",
+            file=sys.stderr,
+        )
+        return 1
+    from openreactor.service import running
+    from openreactor.web import create_app
+
+    config_text = Path(args.config).read_text()
+
+    def start() -> AbstractContextManager[Service]:
+        return running(
+            config,
+            config_text,
+            open_port=open_port,
+            actuators=actuators(config),
+            lock_path=None,  # held below, for the server's whole life
+            clock=clock,
+            sleep=sleep,
+        )
+
+    try:
+        # Taken before the port is bound, so a second controller is refused
+        # with a plain message instead of a failed startup.
+        with ControllerLock(lock_path):
+            run_server(create_app(config, start), host, port)
+    except LockHeld as e:
+        print(
+            f"error: another controller holds {e.path} ({e.holder}); stop it first",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as e:
+        where = f"{e.filename}: " if e.filename else ""
+        print(f"error: {where}{e.strerror or e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _hash_password(args: argparse.Namespace) -> int:
+    if sys.stdin.isatty():
+        password = getpass.getpass("Password: ")
+        if getpass.getpass("Again: ") != password:
+            print("error: the passwords differ", file=sys.stderr)
+            return 1
+    else:
+        password = sys.stdin.readline().rstrip("\r\n")
+    if not password:
+        print("error: the password is empty", file=sys.stderr)
+        return 1
+    print(hash_password(password))
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

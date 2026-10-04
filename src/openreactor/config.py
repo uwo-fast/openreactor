@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openreactor.auth import looks_like_hash
+
 SLICE_KINDS = ("rlht", "dcmt")
 EZO_KINDS = ("ezo-ph", "ezo-orp", "ezo-rtd", "ezo-ec", "ezo-do", "ezo-hum")
 KINDS = SLICE_KINDS + EZO_KINDS
@@ -243,6 +245,9 @@ class _Parser:
         password_hash = None
         if "password_hash" in t:
             password_hash = self.string(t, "password_hash", "server")
+            if password_hash is not None and not looks_like_hash(password_hash):
+                self.error("server.password_hash", "is not a hash from openreactor hash-password")
+                password_hash = None
         return ServerConfig(host=host, port=port, password_hash=password_hash)
 
     def controller(self, raw: Any) -> ControllerConfig:

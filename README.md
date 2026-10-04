@@ -67,6 +67,8 @@ openreactor export 3                 # write run 3 as run-3.zip
 openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
+openreactor serve                    # serve the HTTP API until Ctrl-C
+openreactor hash-password            # make a server.password_hash
 openreactor profile validate --dry-run FILE  # check a run profile, print its timeline
 ```
 
@@ -75,6 +77,33 @@ A run records every reading and event (stop-all, failed reads) in SQLite, at
 export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's
 config. If the database fails mid-run (a full disk, say), recording stops and
 the run is marked interrupted; control and stop-all carry on.
+
+`openreactor serve` runs the controller with the HTTP API at `/api/v1`:
+status, live channels, setpoints, runs and their export, stop-all and EZO
+calibration. It holds the same lock as the other device commands. SIGTERM
+sends stop-all at once; requests still in progress get 5 seconds to finish,
+then the recording run is ended and the circuits are closed.
+
+- With no `server.password_hash` it binds only to a loopback address, and
+  answers only requests addressed to `localhost`, `127.0.0.1` or `[::1]`.
+- To serve the lab network, set `server.host` and a `server.password_hash`
+  from `openreactor hash-password`. A browser signs in with
+  `POST /login` and gets a session cookie, which lasts until `POST /logout`,
+  12 hours, or a server restart. A script sends
+  `Authorization: Bearer <password>`. One password check runs at a time, and
+  each client address has at most one in hand: a second guess from the same
+  address gets 429 at once, and others wait up to 2 seconds for their turn.
+- A request that changes something is refused if its `Origin` names another
+  site; a signed-in browser request must carry one.
+- The OpenAPI description is at `/api/v1/openapi.json`, behind the same
+  sign-in.
+
+Plain HTTP carries the password and the session cookie in the clear, so use it
+on a lab network you trust, or put a TLS proxy in front. The proxy must run on
+the same machine, keep the original `Host` header and send
+`X-Forwarded-Proto`, or browser sign-in fails its Origin check. Never proxy a
+server that has no password: it trusts every request that reaches it under a
+loopback Host name, and the proxy is one.
 
 A run profile is a TOML schedule of setpoints for the actuated channels: each
 channel's steps `set` a value, `ramp` to one over a duration, `hold`, or turn

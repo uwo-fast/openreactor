@@ -32,6 +32,11 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   export N` writes a zip of `readings.csv`, `events.csv` and `run.json`. A
   failing write stops recording and marks the run interrupted without
   stopping control.
+- An HTTP API, `openreactor serve`: status, channels, setpoints, runs,
+  export, stop-all and EZO calibration under `/api/v1`. It binds to a
+  loopback address unless `server.password_hash` is set
+  (`openreactor hash-password`); browsers sign in for a session cookie and
+  scripts send `Authorization: Bearer`.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.

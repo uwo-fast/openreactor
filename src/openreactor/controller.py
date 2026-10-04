@@ -115,6 +115,29 @@ class Controller:
     def subscribe(self, listener: Listener) -> None:
         self._commands.put(lambda: self._listeners.append(listener))
 
+    def unsubscribe(self, listener: Listener) -> None:
+        def remove() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        self._commands.put(remove)
+
+    def call(self, work: Callable[[], _T]) -> Future[_T]:
+        """Run ``work`` on the controller's thread at the next tick, for
+        anything that must not race the tick (the run's database writes)."""
+        future: Future[_T] = Future()
+
+        def command() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(work())
+            except Exception as e:
+                future.set_exception(e)
+
+        self._commands.put(command)
+        return future
+
     def stop_all(self, source: str = "user") -> Future[list[Event]]:
         future: Future[list[Event]] = Future()
 

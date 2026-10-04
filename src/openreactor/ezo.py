@@ -321,10 +321,8 @@ def calibration_status_steps(port: EzoPort) -> Steps[str]:
     return port.read_calibration_status()
 
 
-def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | None) -> Steps[None]:
-    """Calibrate one point. EC and DO are first put back to their default
-    compensation temperature, as their datasheets require. The arguments are
-    checked before anything is sent."""
+def check_calibration(family: Family, point: str, value: float | None) -> None:
+    """Raise ValueError unless ``point`` and ``value`` suit ``family``."""
     if point not in family.points:
         raise ValueError(
             f"{family.name} has no calibration point {point!r}; "
@@ -337,6 +335,13 @@ def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | No
         raise ValueError(f"calibration point {point!r} takes no reference value")
     if value is not None and not math.isfinite(value):
         raise ValueError(f"the reference value must be a finite number, not {value}")
+
+
+def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | None) -> Steps[None]:
+    """Calibrate one point. EC and DO are first put back to their default
+    compensation temperature, as their datasheets require. The arguments are
+    checked before anything is sent."""
+    check_calibration(family, point, value)
     if family.calibration_temp_c is not None:
         temperature = family.calibration_temp_c
         yield from command_steps(port, lambda: port.send_temperature(temperature))
