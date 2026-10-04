@@ -138,8 +138,8 @@ def test_gains_go_only_when_the_config_gives_both_outputs():
         SET_OPEN_DUTY,
         SET_WATCHDOG,
         SET_MODE,
-        SET_TC,
         SET_PERIODS,
+        SET_TC,
         SET_PID,
     ]
     commands = dict(rlht.commands)
@@ -299,9 +299,9 @@ def test_a_failed_poll_is_reported_on_each_channel_and_the_next_poll_goes_ahead(
     seen = []
     c = Controller(EzoReader([]), [s], polled=[s], ezo_period_s=2.0, clock=clock, sleep=clock.sleep)
     c.subscribe(seen.append)
-    rlht.faults = ["corrupt"]
+    rlht.faults = ["corrupt"] * 3  # all three reads of one poll
     tick(c, clock, 2.0)
-    assert [r.outcome for r in seen] == [Outcome.ERROR, Outcome.OK]
+    assert [r.outcome for r in seen if isinstance(r, Result)] == [Outcome.ERROR, Outcome.OK]
 
 
 # Opening slices from a config
@@ -400,4 +400,162 @@ def test_a_negative_temperature_reads_as_negative():
     s, clock = started(rlht)
     s.advance(clock.now)
     [result] = s.advance(clock.now + 0.1)
+    assert isinstance(result, Result)
     assert {v.field: v.value for v in result.values}["temperature"] == -12.3
+
+
+# Supervision (#24)
+
+GET_WATCHDOG_EVERY = 5
+
+
+def controller_for(
+    s: RlhtSlice, clock: FakeClock, *others: FakeActuator
+) -> tuple[Controller, list]:
+    seen: list = []
+    c = Controller(
+        EzoReader([]), [s, *others], polled=[s], ezo_period_s=2.0, clock=clock, sleep=clock.sleep
+    )
+    c.subscribe(seen.append)
+    return c, seen
+
+
+def events(seen: list, kind: str) -> list:
+    return [e for e in seen if getattr(e, "kind", None) == kind]
+
+
+def test_the_watchdog_is_checked_after_every_fifth_poll():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    before = rlht.watchdog_replies
+    tick(c, clock, 10.0)
+    assert rlht.state_replies >= 10
+    assert rlht.watchdog_replies - before == 2
+
+
+def test_a_trip_is_detected_from_the_trip_count_alone_and_re_asserted_in_order():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.setpoints_deci = [370, 0]
+    rlht.trip_count += 1  # armed, not tripped now, but it tripped since
+    rlht.commands.clear()
+    checks = rlht.watchdog_replies
+    tick(c, clock, 6.0)
+    # The fifth poll's check finds the trip; a second check confirms the
+    # re-assert on the next tick instead of five polls later.
+    assert rlht.watchdog_replies - checks == 2
+    [trip] = events(seen, "slice-trip")
+    assert trip.result == "re-asserted" and "trips 0 -> 1" in trip.details
+    assert ops(rlht)[:4] == [SET_MODE, SET_SETPOINTS, SET_TC, SET_WATCHDOG]
+    assert dict(rlht.commands)[SET_SETPOINTS] == struct.pack("<hh", 370, 0)
+    # The re-assert is checked at once, and found good.
+    assert events(seen, "slice-trip") == [trip]
+
+
+def test_a_tripped_flag_is_a_trip():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.tripped = 1
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")
+
+
+@pytest.mark.parametrize("reboot", ["disarmed", "count reset"])
+def test_a_reboot_is_detected_and_re_asserted(reboot: str):
+    rlht = FakeRlht()
+    rlht.trip_count = 4
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    if reboot == "disarmed":
+        rlht.armed = 0
+    else:
+        rlht.trip_count = 0
+    rlht.commands.clear()
+    tick(c, clock, 6.0)
+    [event] = events(seen, "slice-reboot")
+    assert event.result == "re-asserted"
+    assert SET_WATCHDOG in ops(rlht) and rlht.armed == 1
+
+
+def test_a_slice_without_a_watchdog_is_never_checked():
+    rlht = FakeRlht(caps=0x3F)
+    s, clock = started(rlht, device(allow_unprotected=True))
+    c, _ = controller_for(s, clock)
+    tick(c, clock, 10.0)
+    assert rlht.watchdog_replies == 0
+
+
+def test_an_e_stop_sends_stop_all_and_nothing_resumes():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    log: list[str] = []
+    c, seen = controller_for(s, clock, FakeActuator("fan", log))
+    s.setpoints_deci = [370, 0]
+    rlht.flags = 0x01  # e-stop pressed on the slice
+    rlht.commands.clear()
+    tick(c, clock, 3.0)
+    [held] = events(seen, "e-stop")
+    assert held.result == "held"
+    # Stop-all reached every actuator, and the safe state goes every poll.
+    assert log == ["safe fan"]
+    assert ops(rlht).count(SET_SETPOINTS) >= 2
+    assert s.setpoints_deci == [0, 0]
+    rlht.flags = 0
+    rlht.commands.clear()
+    tick(c, clock, 2.0)
+    released = events(seen, "e-stop")[-1]
+    assert released.result == "released"
+    # Nothing was sent to restart heating.
+    assert all(
+        payload == struct.pack("<hh", 0, 0) for op, payload in rlht.commands if op == SET_SETPOINTS
+    )
+
+
+def test_a_re_assert_during_an_e_stop_keeps_setpoints_at_zero():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.flags = 0x01
+    tick(c, clock, 1.0)
+    # An operator setting a setpoint while the e-stop is held (#24 part 3)
+    # must not reach the slice.
+    s.setpoints_deci = [370, 0]
+    rlht.trip_count += 1
+    rlht.commands.clear()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")
+    assert all(
+        payload == struct.pack("<hh", 0, 0) for op, payload in rlht.commands if op == SET_SETPOINTS
+    )
+
+
+def test_a_failed_read_is_retried_twice_within_the_poll():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.faults = ["corrupt", "corrupt"]
+    tick(c, clock, 1.0)
+    assert [r.outcome for r in seen if isinstance(r, Result)] == [Outcome.OK]
+
+
+def test_three_failed_polls_make_the_slice_unreachable_and_an_answer_brings_it_back():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    nack = OSError(errno.EREMOTEIO, "Remote I/O error")
+    # Each failed attempt takes one fault; three attempts make a failed poll.
+    rlht.faults = [nack] * 6  # two failed polls, then one that answers
+    tick(c, clock, 3.0)
+    assert not s.unreachable
+    rlht.faults = [nack] * 9  # three failed polls in a row
+    tick(c, clock, 3.0)
+    [down] = events(seen, "slice-unreachable")
+    assert s.unreachable and "3 polls failed: no answer on the bus" in down.details
+    before = rlht.watchdog_replies
+    tick(c, clock, 2.0)
+    assert events(seen, "slice-reachable") and not s.unreachable
+    # It may have restarted while silent: the watchdog is checked at once.
+    assert rlht.watchdog_replies > before

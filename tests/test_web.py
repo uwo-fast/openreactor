@@ -808,3 +808,12 @@ def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(tmp_path: 
         events = client.post("/api/v1/stop-all").json()
     assert ("heater", "ok") in [(e["device"], e["result"]) for e in events]
     assert [op for op, _ in bench.rlht.commands][:2] == [0x02, 0x06]
+
+
+def test_status_shows_a_slice_e_stop_and_stop_all_reaches_everything(open_bench):
+    bench, client = open_bench
+    bench.rlht.flags = 0x01  # e-stop pressed on the slice
+    until(lambda: "e-stop" in str(client.get("/api/v1/status").json()["devices"]))
+    status = {d["name"]: d["status"] for d in client.get("/api/v1/status").json()["devices"]}
+    assert status["heater"] == "e-stop held on the slice"
+    assert "safe jacket" in bench.log  # stop-all reached the other actuator too

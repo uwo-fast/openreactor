@@ -31,7 +31,7 @@ from __future__ import annotations
 import errno
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Protocol
 
 from bread_crumbs_contracts.bread_caps import (
@@ -49,6 +49,7 @@ from bread_crumbs_contracts.bread_version_helpers import (
 from bread_crumbs_contracts.bread_watchdog import (
     BREAD_OP_GET_WATCHDOG,
     BREAD_OP_SET_WATCHDOG,
+    BreadWatchdogResult,
     bread_watchdog_parse_payload,
 )
 from bread_crumbs_contracts.rlht_ops import (
@@ -57,6 +58,7 @@ from bread_crumbs_contracts.rlht_ops import (
     RLHT_CAP_PERIOD_CONTROL,
     RLHT_CAP_PID_TUNING,
     RLHT_CAP_TC_SELECT,
+    RLHT_FLAG_ESTOP,
     RLHT_MODE_CLOSED_LOOP,
     RLHT_MODULE_VER_MAJOR,
     RLHT_MODULE_VER_MINOR,
@@ -83,6 +85,13 @@ from crumbs_i2c import QUERY_DELAY_S, Bus, Controller, CrumbsError, LinuxBus, Me
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Event
 from openreactor.ezo import Outcome, Result, Value
+
+#: Attempts per poll: a failed read (or SET_REPLY) is retried twice (#24).
+READS_PER_POLL = 3
+#: Polls that fail in a row before the slice is reported unreachable.
+UNREACHABLE_AFTER = 3
+#: A GET_WATCHDOG check after every this many state polls.
+WATCHDOG_EVERY = 5
 
 
 class SliceError(Exception):
@@ -161,7 +170,20 @@ class RlhtSlice:
         # beyond the safe state.
         self.read_only = False
         self._next_poll = 0.0
-        self._staged_at: float | None = None
+        self._staged_at = 0.0
+        self._phase: str | None = None
+        self._staged = False
+        self._attempts = 0
+        self._polls = 0
+        self._failed_polls = 0
+        self._check_watchdog = False
+        self._trip_count = 0
+        self._last_state: RlhtStateResult | None = None
+        self.unreachable = False
+        self.estop = False
+        # What openreactor wants the setpoints to be, in deci-degrees; set by
+        # the operator, sent again after a trip or a reboot.
+        self.setpoints_deci = [0, 0]
 
     # Start-up: blocking, before the controller ticks.
 
@@ -202,6 +224,7 @@ class RlhtSlice:
         if caps.flags & RLHT_CAP_CMD_WATCHDOG:
             self.port.send(BREAD_OP_SET_WATCHDOG, rlht_send_set_watchdog(self.watchdog_timeout_ms))
             watchdog = bread_watchdog_parse_payload(self._query(BREAD_OP_GET_WATCHDOG))
+            self._trip_count = watchdog.trip_count
             if not watchdog.armed or watchdog.timeout_ms != self.watchdog_timeout_ms:
                 raise SliceError(
                     f"watchdog did not arm: armed={watchdog.armed}, "
@@ -211,8 +234,9 @@ class RlhtSlice:
         else:
             self.read_only = not self.device.allow_unprotected
 
+        self._last_state = rlht_parse_state_payload(self._query(RLHT_OP_GET_STATE))
         if not self.read_only:
-            self._configure(rlht_parse_state_payload(self._query(RLHT_OP_GET_STATE)))
+            self._configure(self._last_state)
 
         self._next_poll = self._clock()
         self.started = True
@@ -236,7 +260,7 @@ class RlhtSlice:
             )
         ]
 
-    def _configure(self, state: RlhtStateResult) -> None:
+    def _configure(self, state: RlhtStateResult, *, setpoints: bool = False) -> None:
         """Closed-loop mode, thermocouple select, periods and gains: each only
         if the slice can take it, and periods and gains only if the config
         sets them. An output with no channel keeps the thermocouple and period
@@ -246,14 +270,17 @@ class RlhtSlice:
 
         if flags & RLHT_CAP_MODE_CONTROL:
             self.port.send(RLHT_OP_SET_MODE, rlht_send_set_mode(RLHT_MODE_CLOSED_LOOP))
-        if flags & RLHT_CAP_TC_SELECT:
-            tc1 = _setting(by_output, 1, "tc", state.tc1)
-            tc2 = _setting(by_output, 2, "tc", state.tc2)
-            self.port.send(RLHT_OP_SET_TC_SELECT, rlht_send_set_tc_select(tc1, tc2))
+        if setpoints:
+            sp1, sp2 = (0, 0) if self.estop else self.setpoints_deci
+            self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(sp1, sp2))
         if flags & RLHT_CAP_PERIOD_CONTROL and any(ch.period_ms for ch in by_output.values()):
             p1 = _setting(by_output, 1, "period_ms", state.period1_ms)
             p2 = _setting(by_output, 2, "period_ms", state.period2_ms)
             self.port.send(RLHT_OP_SET_PERIODS, rlht_send_set_periods(p1, p2))
+        if flags & RLHT_CAP_TC_SELECT:
+            tc1 = _setting(by_output, 1, "tc", state.tc1)
+            tc2 = _setting(by_output, 2, "tc", state.tc2)
+            self.port.send(RLHT_OP_SET_TC_SELECT, rlht_send_set_tc_select(tc1, tc2))
         gains = [by_output[o] for o in (1, 2) if o in by_output]
         if (
             flags & RLHT_CAP_PID_TUNING
@@ -279,27 +306,182 @@ class RlhtSlice:
 
     # The poll: called each controller tick, never waits.
 
-    def advance(self, now: float) -> list[Result]:
-        if self._staged_at is None:
-            if now < self._next_poll:
+    def advance(self, now: float) -> list[Result | Event]:
+        """Do whatever is due at ``now``: stage a query, or read the one
+        staged a tick ago. Returns readings and supervision events."""
+        if self._phase is None:
+            due = self._check_watchdog or now >= self._next_poll
+            if not due:
                 return []
-            self._next_poll += self.poll_s
-            if self._next_poll <= now:  # fell behind: skip to the next slot
-                self._next_poll = now + self.poll_s
-            try:
-                self.port.stage(RLHT_OP_GET_STATE)
-            except (CrumbsError, OSError) as e:
-                return self._failed(e)
-            self._staged_at = now
-            return []
+            if not self._check_watchdog:
+                self._next_poll += self.poll_s
+                if self._next_poll <= now:  # fell behind: skip to the next slot
+                    self._next_poll = now + self.poll_s
+            self._phase = "watchdog" if self._check_watchdog else "state"
+            self._attempts = 0
+            self._staged = False
+        if not self._staged:
+            return self._stage(now)
         if now < self._staged_at + QUERY_DELAY_S:
             return []
-        self._staged_at = None
+        opcode = BREAD_OP_GET_WATCHDOG if self._phase == "watchdog" else RLHT_OP_GET_STATE
         try:
-            state = rlht_parse_state_payload(self.port.read(RLHT_OP_GET_STATE))
+            payload = self.port.read(opcode)
+            parsed: BreadWatchdogResult | RlhtStateResult = (
+                bread_watchdog_parse_payload(payload)
+                if self._phase == "watchdog"
+                else rlht_parse_state_payload(payload)
+            )
         except (CrumbsError, OSError, ValueError) as e:
-            return self._failed(e)
-        return self._readings(state)
+            return self._attempt_failed(e, now)
+        self._phase = None
+        out: list[Result | Event] = self._answered()
+        if isinstance(parsed, BreadWatchdogResult):
+            self._check_watchdog = False
+            return out + self._supervise(parsed)
+        state = parsed
+        self._last_state = state
+        self._polls += 1
+        if self.protected and self._polls % WATCHDOG_EVERY == 0:
+            self._check_watchdog = True
+        return out + self._estop(state) + self._readings(state)
+
+    def _stage(self, now: float) -> list[Result | Event]:
+        opcode = BREAD_OP_GET_WATCHDOG if self._phase == "watchdog" else RLHT_OP_GET_STATE
+        try:
+            self.port.stage(opcode)
+        except (CrumbsError, OSError) as e:
+            return self._attempt_failed(e, now)
+        self._staged = True
+        self._staged_at = now
+        return []
+
+    def _attempt_failed(self, e: BaseException, now: float) -> list[Result | Event]:
+        """A failed stage or read: retried within the poll, twice (#24),
+        staging again at once; after that, the poll has failed."""
+        self._attempts += 1
+        if self._attempts < READS_PER_POLL:
+            self._staged = False
+            return self._stage(now) if isinstance(e, CrumbsError) else []
+        self._phase = None
+        return self._poll_failed(e)
+
+    def _poll_failed(self, e: BaseException) -> list[Result | Event]:
+        self._failed_polls += 1
+        out: list[Result | Event] = list(self._failed(e))
+        if self._failed_polls == UNREACHABLE_AFTER and not self.unreachable:
+            self.unreachable = True
+            out.append(
+                Event(
+                    self._wall(),
+                    "system",
+                    "slice-unreachable",
+                    device=self.name,
+                    details=f"{UNREACHABLE_AFTER} polls failed: {_describe(e)}",
+                    result="error",
+                )
+            )
+        return out
+
+    def _answered(self) -> list[Result | Event]:
+        self._failed_polls = 0
+        if not self.unreachable:
+            return []
+        self.unreachable = False
+        # It may have restarted while it did not answer: check at once.
+        self._check_watchdog = self.protected
+        return [Event(self._wall(), "system", "slice-reachable", device=self.name)]
+
+    def _estop(self, state: RlhtStateResult) -> list[Result | Event]:
+        held = bool(state.flags & RLHT_FLAG_ESTOP)
+        if held and not self.estop:
+            self.estop = True
+            # Nothing resumes after an e-stop until the operator says so.
+            self.setpoints_deci = [0, 0]
+            return [
+                Event(
+                    self._wall(),
+                    "slice",
+                    "e-stop",
+                    device=self.name,
+                    details="e-stop pressed on the slice",
+                    result="held",
+                )
+            ]
+        if held:
+            self._send_safe_quietly()
+            return []
+        if self.estop:
+            self.estop = False
+            return [
+                Event(
+                    self._wall(),
+                    "slice",
+                    "e-stop",
+                    device=self.name,
+                    details="e-stop released; setpoints stay at 0 until set again",
+                    result="released",
+                )
+            ]
+        return []
+
+    def _supervise(self, watchdog: BreadWatchdogResult) -> list[Result | Event]:
+        """A trip or a reboot means the slice dropped what it was told:
+        re-assert it, then check again on the next tick."""
+        baseline = self._trip_count
+        self._trip_count = watchdog.trip_count
+        if not watchdog.armed or watchdog.trip_count < baseline:
+            what = "slice-reboot"
+            details = (
+                f"watchdog disarmed or trip count reset "
+                f"(armed={watchdog.armed}, trips {watchdog.trip_count})"
+            )
+        elif watchdog.tripped or watchdog.trip_count != baseline:
+            what = "slice-trip"
+            details = (
+                f"watchdog tripped "
+                f"(tripped={watchdog.tripped}, trips {baseline} -> {watchdog.trip_count})"
+            )
+        else:
+            return []
+        try:
+            self._reassert()
+        except (CrumbsError, OSError, ValueError) as e:
+            return [
+                Event(
+                    self._wall(),
+                    "system",
+                    what,
+                    device=self.name,
+                    details=details,
+                    result=f"error: re-assert failed: {_describe(e)}",
+                )
+            ]
+        self._check_watchdog = True
+        return [
+            Event(
+                self._wall(),
+                "system",
+                what,
+                device=self.name,
+                details=details,
+                result="re-asserted",
+            )
+        ]
+
+    def _reassert(self) -> None:
+        """The desired state, in the order #24 gives: mode, setpoints,
+        periods, thermocouples, gains, then the watchdog armed again."""
+        if self.read_only or self._last_state is None:
+            return
+        self._configure(self._last_state, setpoints=True)
+        if self.protected:
+            self.port.send(BREAD_OP_SET_WATCHDOG, rlht_send_set_watchdog(self.watchdog_timeout_ms))
+
+    def _send_safe_quietly(self) -> None:
+        # A failure is retried at the next poll; the e-stop holds the relays off.
+        with suppress(CrumbsError, OSError):
+            self.send_safe()
 
     def _failed(self, e: BaseException) -> list[Result]:
         detail = _describe(e)

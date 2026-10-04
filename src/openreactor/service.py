@@ -165,6 +165,10 @@ class Service:
             elif d.name in self._problems:
                 p = self._problems[d.name]
                 status = f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+            elif d.name in self._slices and self._slices[d.name].unreachable:
+                status = "unreachable: 3 polls failed in a row"
+            elif d.name in self._slices and self._slices[d.name].estop:
+                status = "e-stop held on the slice"
             elif d.name in self._slices and self._slices[d.name].read_only:
                 status = "read-only: the slice has no command watchdog"
             else:

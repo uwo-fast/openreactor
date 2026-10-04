@@ -170,6 +170,7 @@ class FakeRlht:
         self.fail_opcodes: dict[int, BaseException] = {}
         # GET_STATE replies served: the firmware feeds its watchdog on each.
         self.state_replies = 0
+        self.watchdog_replies = 0
 
     def write(self, frame: bytes) -> None:
         from crumbs_i2c import decode
@@ -233,6 +234,8 @@ class FakeRlht:
             return b"\xff" * count
         if self.staged == 0x80:
             self.state_replies += 1
+        elif self.staged == 0x7D:
+            self.watchdog_replies += 1
         frame = encode(Message(self.type_id, self.staged, self.reply()))
         return (frame + b"\xff" * count)[:count]
 
