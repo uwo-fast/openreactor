@@ -79,22 +79,29 @@ the run is marked interrupted; control and stop-all carry on.
 
 `openreactor serve` runs the controller with the HTTP API at `/api/v1`:
 status, live channels, setpoints, runs and their export, stop-all and EZO
-calibration. It holds the same lock as the other device commands, and SIGTERM
-sends stop-all and ends a recording run before it exits.
+calibration. It holds the same lock as the other device commands. SIGTERM
+sends stop-all at once; requests still in progress get 5 seconds to finish,
+then the recording run is ended and the circuits are closed.
 
 - With no `server.password_hash` it binds only to a loopback address, and
   answers only requests addressed to `localhost`, `127.0.0.1` or `[::1]`.
 - To serve the lab network, set `server.host` and a `server.password_hash`
   from `openreactor hash-password`. A browser signs in with
-  `POST /login` and gets a session cookie, which lasts 12 hours or until the
-  server restarts. A script sends `Authorization: Bearer <password>`.
+  `POST /login` and gets a session cookie, which lasts until `POST /logout`,
+  12 hours, or a server restart. A script sends
+  `Authorization: Bearer <password>`. One password check runs at a time; a
+  guess made while another is being checked gets 429.
 - A request that changes something is refused if its `Origin` names another
   site; a signed-in browser request must carry one.
 - The OpenAPI description is at `/api/v1/openapi.json`, behind the same
   sign-in.
 
 Plain HTTP carries the password and the session cookie in the clear, so use it
-on a lab network you trust, or put a TLS proxy in front.
+on a lab network you trust, or put a TLS proxy in front. The proxy must run on
+the same machine, keep the original `Host` header and send
+`X-Forwarded-Proto`, or browser sign-in fails its Origin check. Never proxy a
+server that has no password: it trusts every request that reaches it under a
+loopback Host name, and the proxy is one.
 
 Calibration points by family:
 

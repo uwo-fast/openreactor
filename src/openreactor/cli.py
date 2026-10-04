@@ -63,12 +63,39 @@ def actuators(config: Config) -> list[Actuator]:
     return []
 
 
+# How long, after SIGINT or SIGTERM, requests in progress may take to
+# finish. Stop-all is sent at once regardless; this bounds how long a slow
+# client can keep a run from being ended and the circuits closed.
+GRACEFUL_SHUTDOWN_S = 5
+
+
 def run_server(app: FastAPI, host: str, port: int) -> None:
     """Serve ``app`` until SIGINT or SIGTERM. Tests replace this. One
-    process: the controller and its lock live in it."""
+    process: the controller and its lock live in it.
+
+    The port is bound before the app starts, so a port in use is an error
+    before any device is opened."""
+    import socket
+
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, workers=1)
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        sock = socket.create_server((host, port), family=family)
+    except OSError as e:
+        raise OSError(e.errno, e.strerror, f"{host}:{port}") from None
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+            # Stop-all before uvicorn waits for open connections to close.
+            stop_now = getattr(app.state, "stop_now", None)
+            if stop_now is not None:
+                stop_now()
+            super().handle_exit(sig, frame)
+
+    config = uvicorn.Config(app, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    with sock:
+        Server(config).run(sockets=[sock])
 
 
 def _load(path: str) -> Config | None:

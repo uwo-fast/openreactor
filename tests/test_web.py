@@ -15,7 +15,7 @@ from openreactor.ezo import Value
 from openreactor.lock import ControllerLock
 from openreactor.service import running
 from openreactor.storage import Store
-from openreactor.web import SESSION_COOKIE, create_app
+from openreactor.web import MAX_BODY_BYTES, SESSION_COOKIE, create_app
 
 PASSWORD = "correct horse"
 HASH = hash_password(PASSWORD)
@@ -142,6 +142,8 @@ def test_a_foreign_host_name_is_refused_without_a_password(open_bench):
     the server, but under its own Host name."""
     _, client = open_bench
     assert client.get("/api/v1/status", headers={"Host": "evil.example:8080"}).status_code == 403
+    for host in ("[::1", "", "127.0.0.1.evil.example"):
+        assert client.get("/api/v1/status", headers={"Host": host}).status_code == 403, host
     for host in ("localhost:8080", "127.0.0.1", "[::1]:8080"):
         assert client.get("/api/v1/status", headers={"Host": host}).status_code == 200, host
 
@@ -450,3 +452,253 @@ def test_calibrating_a_device_that_failed_at_startup_says_why(tmp_path: Path):
         assert r.json()["detail"].startswith("air is out of use since startup")
         status = client.get("/api/v1/status").json()
         assert status["devices"][1]["status"] != "ok"
+
+
+# Abuse from the network: none of it may delay or block stop-all
+
+
+def test_a_large_body_is_refused_before_it_is_read(locked_bench):
+    _, client = locked_bench
+    big = "x" * (MAX_BODY_BYTES + 1)
+    r = client.post("/login", data={"password": big}, headers={"Origin": LOCAL})
+    assert r.status_code == 413
+    r = client.post("/api/v1/runs", json={"name": big})
+    assert r.status_code == 413
+    # Without a Content-Length the bytes are counted as they arrive.
+    chunks = (b"x" * 4096 for _ in range(MAX_BODY_BYTES // 4096 + 2))
+    r = client.post("/login", content=chunks, headers={"Origin": LOCAL})
+    assert r.status_code == 413
+    assert client.post("/login", json={"password": PASSWORD}).status_code == 204
+
+
+def test_a_guess_during_another_check_is_refused_not_queued(monkeypatch):
+    import threading
+
+    from openreactor import web
+    from openreactor.web import Busy, Gate
+
+    gate = Gate(HASH)
+    assert gate.check(PASSWORD)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_verify(password: str, stored: str) -> bool:
+        entered.set()
+        release.wait(5)
+        return False
+
+    monkeypatch.setattr(web, "verify_password", slow_verify)
+    guess = threading.Thread(target=lambda: gate.check("wrong"))
+    guess.start()
+    assert entered.wait(5)
+    with pytest.raises(Busy):
+        gate.check("also wrong")
+    # The known password is still let in at once.
+    assert gate.check(PASSWORD)
+    release.set()
+    guess.join()
+
+
+def test_a_busy_gate_answers_429(locked_bench, monkeypatch):
+    from openreactor.web import Busy
+
+    bench, client = locked_bench
+
+    def busy(password: str) -> bool:
+        raise Busy
+
+    monkeypatch.setattr(bench.app.state.gate, "check", busy)
+    assert client.get("/api/v1/status", headers={"Authorization": "Bearer nope"}).status_code == 429
+    r = client.post("/login", json={"password": "nope"})
+    assert r.status_code == 429
+
+
+def test_signing_out_revokes_a_copied_cookie(locked_bench):
+    _, client = locked_bench
+    sign_in(client)
+    copied = client.cookies[SESSION_COOKIE]
+    assert client.post("/logout", headers={"Origin": LOCAL}).status_code == 204
+    client.cookies.set(SESSION_COOKIE, copied)
+    assert client.get("/api/v1/status").status_code == 401
+
+
+def test_put_and_delete_need_a_matching_origin_too(locked_bench):
+    bench, client = locked_bench
+    sign_in(client)
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 1.0})
+    assert r.status_code == 403
+    assert client.delete("/api/v1/ezo/air/calibration").status_code == 403
+    assert "cal clear" not in bench.port.sent
+
+
+def test_stop_now_sends_stop_all_without_waiting(open_bench):
+    bench, client = open_bench
+    stop_now = bench.app.state.stop_now
+    assert stop_now is not None
+    stop_now()
+    until(lambda: bench.log == ["safe jacket"])
+
+
+# Errors
+
+
+def test_a_circuit_that_refuses_a_calibration_is_a_502(open_bench):
+    from openreactor.ezo import Outcome
+
+    bench, client = open_bench
+    bench.port.ack = Outcome.FAIL
+    r = client.post("/api/v1/ezo/air/calibration", json={"point": "temperature", "value": 25.0})
+    assert r.status_code == 502
+    assert r.json()["detail"] == f"the circuit answered {Outcome.FAIL.value}"
+
+
+def test_an_impossible_run_number_is_a_422(open_bench):
+    _, client = open_bench
+    for run in ("0", "99999999999999999999"):
+        assert client.get(f"/api/v1/runs/{run}/export").status_code == 422, run
+
+
+def test_an_unwritable_database_is_a_503(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.database.parent.mkdir()
+    bench.database.parent.chmod(0o500)
+    try:
+        with TestClient(bench.app, base_url=LOCAL) as client:
+            r = client.post("/api/v1/runs", json={"name": "brew"})
+            assert r.status_code == 503, r.text
+            assert client.post("/api/v1/stop-all").status_code == 200
+    finally:
+        bench.database.parent.chmod(0o700)
+
+
+def test_status_shows_that_recording_stopped(open_bench, monkeypatch):
+    import sqlite3
+
+    bench, client = open_bench
+
+    def full(*args, **kwargs):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(Store, "add_readings", full)
+    run = client.post("/api/v1/runs", json={"name": "brew"}).json()["id"]
+    until(lambda: client.get("/api/v1/status").json()["recording_failed"] is not None)
+    status = client.get("/api/v1/status").json()
+    assert status["run"] == run
+    assert status["recording_failed"] == "database or disk is full"
+    r = client.post("/api/v1/runs", json={"name": "again"})
+    assert r.status_code == 409 and "stopped recording" in r.json()["detail"]
+    assert client.post("/api/v1/runs/current/stop").json() == {"id": run, "status": "interrupted"}
+
+
+def test_an_action_the_controller_never_reached_is_cancelled(tmp_path: Path, monkeypatch):
+    from openreactor import service
+    from openreactor.controller import Controller
+    from openreactor.ezo import EzoReader
+    from openreactor.service import Service
+
+    monkeypatch.setattr(service, "ACTION_TIMEOUT_S", 0.05)
+    bench = Bench(tmp_path, password=False)
+    controller = Controller(EzoReader([]), [], ezo_period_s=2.0, auto_read=True)  # not ticking
+    svc = Service(bench.config, bench.text, controller, bench.database)
+    with pytest.raises(TimeoutError, match="nothing was done"):
+        svc.start_run("brew")
+    controller.step()  # the controller catches up
+    assert svc.current_run() is None
+    assert not bench.database.exists()
+
+
+def test_a_port_in_use_is_an_error_before_any_device_opens(tmp_path: Path, monkeypatch, capsys):
+    import socket
+
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "lock_path", tmp_path / "openreactor.lock")
+    monkeypatch.setattr(cli, "open_port", lambda d: opened.append(d.name))
+    config = write_config(tmp_path, password=False)
+    with socket.create_server(("127.0.0.1", 0)) as taken:
+        port = taken.getsockname()[1]
+        assert cli.main(["serve", "-c", config, "--port", str(port)]) == 1
+    assert f"error: 127.0.0.1:{port}: Address already in use" in capsys.readouterr().err
+    assert opened == []
+
+
+def test_sigterm_sends_stop_all_at_once_even_with_a_slow_client(tmp_path: Path):
+    """A client that never finishes its request must not hold back
+    stop-all, nor keep the run from being ended."""
+    import json
+    import signal
+    import socket
+    import subprocess
+    import sys
+    import urllib.request
+
+    config = write_config(tmp_path, password=False)
+    with socket.create_server(("127.0.0.1", 0)) as probe:
+        port = probe.getsockname()[1]
+    launch = (
+        "import sys; from pathlib import Path; from openreactor import cli; "
+        f"cli.lock_path = Path({str(tmp_path / 'openreactor.lock')!r}); "
+        "cli.GRACEFUL_SHUTDOWN_S = 1; sys.exit(cli.main(sys.argv[1:]))"
+    )
+    server = subprocess.Popen(
+        [sys.executable, "-c", launch, "serve", "-c", config, "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+
+        def up() -> bool:
+            try:
+                urllib.request.urlopen(f"{base}/api/v1/status", timeout=1)
+                return True
+            except OSError:
+                return False
+
+        until(up, timeout_s=15)
+        request = urllib.request.Request(
+            f"{base}/api/v1/runs",
+            data=json.dumps({"name": "brew"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        run = json.load(urllib.request.urlopen(request, timeout=5))["id"]
+        slow = socket.create_connection(("127.0.0.1", port))
+        slow.sendall(b"POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 1000\r\n\r\nx")
+        time.sleep(0.2)
+        sent = time.time()
+        server.send_signal(signal.SIGTERM)
+        server.wait(timeout=10)
+        slow.close()
+    finally:
+        if server.poll() is None:
+            server.kill()
+    store = Store(tmp_path / "state" / "openreactor.db", read_only=True)
+    try:
+        assert store.run(run).status == "stopped"  # type: ignore[union-attr]
+        db = store._db  # pyright: ignore[reportPrivateUsage]
+        [first] = db.execute("SELECT min(time) FROM events WHERE kind = 'stop-all'").fetchone()
+    finally:
+        store.close()
+    assert first - sent < 0.5, server.stderr.read() if server.stderr else ""
+
+
+def test_a_declared_large_body_is_refused_without_reading_it():
+    import asyncio
+
+    from openreactor.web import BodyLimit
+
+    async def app(scope, receive, send):
+        raise AssertionError("the app ran")
+
+    async def receive():
+        raise AssertionError("the body was read")
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    for length in (str(MAX_BODY_BYTES + 1), "1e9", "-1"):
+        sent.clear()
+        scope = {"type": "http", "headers": [(b"content-length", length.encode())]}
+        asyncio.run(BodyLimit(app)(scope, receive, send))
+        assert sent[0]["status"] == 413, length

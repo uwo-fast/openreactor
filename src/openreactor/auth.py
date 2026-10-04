@@ -29,22 +29,34 @@ def hash_password(password: str) -> str:
     return f"scrypt${N}${R}${P}${b64(salt).decode()}${b64(key).decode()}"
 
 
+def _parse(stored: str) -> tuple[int, int, int, bytes, bytes] | None:
+    """The cost, salt and key of a hash this module would write, or None.
+    Costs outside fixed bounds are refused rather than attempted."""
+    try:
+        scheme, n, r, p, salt, key = stored.split("$")
+        cost = int(n), int(r), int(p)
+        decoded = base64.b64decode(salt, validate=True), base64.b64decode(key, validate=True)
+    except ValueError:
+        return None
+    n_, r_, p_ = cost
+    power_of_two = n_ >= 2 and n_ & (n_ - 1) == 0
+    if scheme != "scrypt" or not (power_of_two and n_ <= 2**20 and 1 <= r_ <= 32 and 1 <= p_ <= 16):
+        return None
+    if not decoded[0] or len(decoded[1]) != KEY_BYTES:
+        return None
+    return n_, r_, p_, decoded[0], decoded[1]
+
+
 def verify_password(password: str, stored: str) -> bool:
     """True if ``password`` matches ``stored``. A malformed hash never
     matches."""
-    try:
-        scheme, n, r, p, salt, key = stored.split("$")
-        n_, r_, p_ = int(n), int(r), int(p)
-        # Costs this module would never write: refuse rather than attempt.
-        if scheme != "scrypt" or not (2 <= n_ <= 2**20 and 1 <= r_ <= 32 and 1 <= p_ <= 16):
-            return False
-        expected = base64.b64decode(key, validate=True)
-        actual = _scrypt(password, base64.b64decode(salt, validate=True), n_, r_, p_)
-    except (ValueError, TypeError, MemoryError):
+    parsed = _parse(stored)
+    if parsed is None:
         return False
-    return hmac.compare_digest(actual, expected)
+    n, r, p, salt, expected = parsed
+    return hmac.compare_digest(_scrypt(password, salt, n, r, p), expected)
 
 
 def looks_like_hash(stored: str) -> bool:
-    parts = stored.split("$")
-    return len(parts) == 6 and parts[0] == "scrypt" and all(parts[1:4]) and parts[1].isdigit()
+    """True if ``stored`` is a hash verify_password can check."""
+    return _parse(stored) is not None

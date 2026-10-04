@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,23 @@ _T = TypeVar("_T")
 
 # How long a request waits for the controller to finish an action.
 ACTION_TIMEOUT_S = 30.0
+
+
+def _wait(future: Future[_T]) -> _T:
+    """The action's result. One the controller has not started within the
+    timeout is cancelled, so it never runs after the caller gave up; one
+    already running is let finish."""
+    try:
+        return future.result(timeout=ACTION_TIMEOUT_S)
+    except TimeoutError:
+        if future.cancel():
+            raise TimeoutError(
+                "the controller did not get to it in time; nothing was done"
+            ) from None
+    try:
+        return future.result(timeout=ACTION_TIMEOUT_S)
+    except TimeoutError:
+        raise TimeoutError("the controller started this but has not finished it") from None
 
 
 class NotFound(Exception):
@@ -150,6 +168,11 @@ class Service:
     def current_run(self) -> int | None:
         return self._run
 
+    def recording_failed(self) -> str | None:
+        """Why the current run stopped recording, if it did."""
+        recorder = self._recorder
+        return recorder.failed if recorder is not None else None
+
     def set_setpoint(self, channel: str, value: float) -> None:
         for d in self.config.devices:
             if any(ch.name == channel for ch in d.channels):
@@ -159,13 +182,25 @@ class Service:
     # Stop-all
 
     def stop_all(self) -> list[Event]:
-        return self.controller.stop_all("user").result(timeout=ACTION_TIMEOUT_S)
+        # Never cancelled: a stop-all that reports late has still been sent.
+        try:
+            return self.controller.stop_all("user").result(timeout=ACTION_TIMEOUT_S)
+        except TimeoutError:
+            raise TimeoutError("stop-all was queued but has not reported back") from None
+
+    def stop_now(self) -> None:
+        """Queue stop-all without waiting: for a signal handler, before the
+        server drains its connections."""
+        self.controller.stop_all("system")
 
     # Runs
 
     def start_run(self, name: str, notes: str = "") -> int:
         def start() -> int:
             if self._run is not None:
+                failed = self.recording_failed()
+                if failed is not None:
+                    raise Conflict(f"run {self._run} stopped recording ({failed}); stop it first")
                 raise Conflict(f"run {self._run} is already recording")
             if self._store is None:
                 self._store = Store(self._database)
@@ -182,7 +217,7 @@ class Service:
             self._run = run
             return run
 
-        return self.controller.call(start).result(timeout=ACTION_TIMEOUT_S)
+        return _wait(self.controller.call(start))
 
     def stop_run(self) -> tuple[int, str]:
         def stop() -> tuple[int, str]:
@@ -196,7 +231,7 @@ class Service:
             self._run, self._recorder = None, None
             return run, status
 
-        return self.controller.call(stop).result(timeout=ACTION_TIMEOUT_S)
+        return _wait(self.controller.call(stop))
 
     def runs(self) -> list[Run]:
         if not self._database.exists():
@@ -257,7 +292,7 @@ class Service:
         return self.calibration(device)
 
     def _job(self, device: str, steps: Steps[_T]) -> _T:
-        return self.controller.run_job(device, steps).result(timeout=ACTION_TIMEOUT_S)
+        return _wait(self.controller.run_job(device, steps))
 
     # Shutdown
 

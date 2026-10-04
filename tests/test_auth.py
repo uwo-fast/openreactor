@@ -55,3 +55,17 @@ def test_the_gate_remembers_a_verified_password_only():
     assert gate.check("pw")
     assert not gate.check("nope")
     assert Gate(None).check("anything")
+
+
+def test_the_config_check_refuses_what_verification_would():
+    """A hash that passes the config check must be one a login can match."""
+    stored = hash_password("pw")
+    _, n, r, p, salt, key = stored.split("$")
+    for bad in [
+        f"scrypt$3000${r}${p}${salt}${key}",  # not a power of two
+        f"scrypt${2**21}${r}${p}${salt}${key}",  # above the bound
+        f"scrypt${n}${r}${p}$not*base64${key}",
+        f"scrypt${n}${r}${p}${salt}$c2hvcnQ=",  # a key of the wrong length
+    ]:
+        assert not looks_like_hash(bad), bad
+    assert looks_like_hash(stored)
