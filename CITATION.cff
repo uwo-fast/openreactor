@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "openreactor"
+abstract: "Supervises benchtop lab reactors from a Raspberry Pi: temperature, mixing, dosing and water chemistry, with recorded runs."
+type: software
+authors:
+  - family-names: "Brooks"
+    given-names: "Cameron K."
+  - family-names: "Michels"
+    given-names: "Etienne"
+  - family-names: "Holmes"
+    given-names: "Wilson J."
+  - family-names: "Hafting"
+    given-names: "Finn"
+url: "https://github.com/uwo-fast/openreactor"
+repository-code: "https://github.com/uwo-fast/openreactor"
+license: AGPL-3.0-or-later

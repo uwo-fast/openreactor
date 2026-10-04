@@ -1,0 +1,61 @@
+# Runs the same `just` recipes as a local checkout. Require only `ok` in the
+# branch ruleset: it fails when any job it needs fails or is cancelled.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: just setup
+      - run: just check
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: just setup
+      - run: just test
+
+  ok:
+    name: ok
+    if: always()
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All checks passed"

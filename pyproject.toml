@@ -1,0 +1,51 @@
+[project]
+name = "openreactor"
+version = "2.0.0.dev0"
+description = "Supervise benchtop lab reactors from a Raspberry Pi: temperature, mixing, dosing and water chemistry, with recorded runs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "FAST Research Group" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/uwo-fast/openreactor"
+Issues = "https://github.com/uwo-fast/openreactor/issues"
+Changelog = "https://github.com/uwo-fast/openreactor/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pyright>=1.1.400",
+    "pytest>=8.0",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# The 1.x code stays on main until it is removed, and is not linted.
+include = ["src/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
