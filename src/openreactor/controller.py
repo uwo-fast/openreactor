@@ -203,6 +203,10 @@ class Controller:
                 return
             command()
 
+    def publish(self, item: Result | Event) -> None:
+        """Publish from work run by ``call``, on the controller's thread."""
+        self._publish(item)
+
     def _publish(self, item: Result | Event) -> None:
         for listener in self._listeners:
             try:

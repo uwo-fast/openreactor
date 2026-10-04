@@ -55,8 +55,14 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   the desired state, checked at the next poll; 3 failed watchdog reads in a
   row are logged; a slice e-stop or stop-all
   zeroes the setpoints and nothing resumes; a failed read is retried twice per poll, and 3 failed polls
-  mark the slice unreachable. Each is an event in the run and shows in
-  `/status`.
+  mark the slice unreachable. Each is an event in the run, and `/status`
+  shows a slice that is unreachable or held by its e-stop.
+- RLHT setpoints from the API and the Controls page, in °C to a tenth of a
+  degree, up to an optional per-channel `max_setpoint`; refused while the
+  slice's e-stop is held, it is read-only or it is unreachable, and
+  recorded as an event. A slice found running other setpoints than wanted,
+  with no trip or reboot behind it, is sent its safe state.
+- `openreactor serve` prints each event as it happens, as `run` does.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.

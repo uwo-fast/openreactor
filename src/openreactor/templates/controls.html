@@ -12,10 +12,17 @@
       <td>{{ c.label }} <span class="text-body-secondary">({{ c.name }})</span></td>
       <td>{{ c.device }} ({{ c.kind }})</td>
       <td>
+        {% if c.kind == "rlht" %}
         <form class="d-flex gap-2" hx-post="/ui/channels/{{ c.name }}/setpoint" hx-target="#notice">
-          <input class="form-control form-control-sm setpoint" name="value" type="number" step="any" required aria-label="Setpoint for {{ c.name }}">
+          <div class="input-group input-group-sm">
+            <input class="form-control setpoint" name="value" type="number" min="0" max="{{ c.max }}" step="0.1" required aria-label="Setpoint for {{ c.name }} in °C, up to {{ c.max }}">
+            <span class="input-group-text">°C</span>
+          </div>
           <button class="btn btn-sm btn-primary">Set</button>
         </form>
+        {% else %}
+        <span class="text-body-secondary">DCMT slices are not supported yet</span>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

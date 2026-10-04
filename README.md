@@ -98,8 +98,25 @@ pressed on a slice sends stop-all, and its setpoints stay at zero until the
 operator sets them again. Stop-all sends every slice its safe state, and its
 setpoints stay at zero the same way. Until feastorg/Slice_RLHT#13
 is fixed, that does not turn a running heater off at once: the slice keeps its
-PID integral, so the output decays to off over seconds (#51). Setpoints on slices come
-next (#24).
+PID integral, so the output decays to off over seconds (#51).
+
+An RLHT channel's setpoint is set from the API
+(`PUT /api/v1/channels/<name>/setpoint`) or the Controls page, in °C to the
+slice's tenth of a degree: from 0 up to the channel's `max_setpoint`, or
+3276.7 °C when the config sets none. It is refused while the slice's e-stop
+is held, the slice is read-only, or a change in its setpoints is being
+checked (409, for a moment; see below), and while it is unreachable or did
+not finish start-up (503). A send that fails answers 502, since the slice may
+have taken it. Each one sent, or tried, is an event in the run. It stays the
+desired setpoint, sent again after a trip or a reboot, until it is set again
+or stop-all or an e-stop zeroes it. It is not restored after a restart.
+
+When a poll finds the slice running setpoints other than those wanted, the
+watchdog is checked on the next tick: a trip or a reboot is re-asserted as
+above. With neither, the slice is sent its safe state and the setpoints stay
+at zero until set again. That covers an e-stop pressed and released between
+two polls, a setpoint that reached the slice although its send failed, and
+another controller.
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
 `storage.database`, by default `~/.local/state/openreactor/openreactor.db`. An
@@ -115,7 +132,8 @@ nothing from the internet; the few browser files it uses are vendored, as
 
 `openreactor serve` runs the controller with the HTTP API at `/api/v1`:
 status, live channels, setpoints, runs and their export, stop-all and EZO
-calibration. It holds the same lock as the other device commands. SIGTERM
+calibration. It prints each event as it happens, as `run` does, and holds
+the same lock as the other device commands. SIGTERM
 sends stop-all at once; requests still in progress get 5 seconds to finish,
 then the recording run is ended and the circuits are closed.
 

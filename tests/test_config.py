@@ -420,6 +420,34 @@ def test_a_period_alone_needs_no_other_output():
     parse_config(data)
 
 
+def test_a_max_setpoint_is_kept_on_an_rlht_channel():
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "max_setpoint": 80}}
+    assert parse_config(data).devices[0].channels[0].max_setpoint == 80.0
+    assert parse_config(config()).devices[0].channels[0].max_setpoint is None
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        (0, "must be greater than 0"),
+        (-5, "must be greater than 0"),
+        ("hot", "must be a number"),
+        (3276.8, "must be at most 3276.7, the highest setpoint the slice takes"),
+    ],
+)
+def test_rejects_a_max_setpoint_outside_what_the_slice_takes(value: Any, problem: str):
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "max_setpoint": value}}
+    assert problems(data) == [f"device[0].channels.jacket.max_setpoint: {problem}"]
+
+
+def test_a_max_setpoint_is_only_for_rlht_channels():
+    data = config()
+    data["device"][1]["channels"] = {"stirrer": {"motor": 1, "max_setpoint": 100}}
+    assert problems(data) == ["device[1].channels.stirrer.max_setpoint: unknown key"]
+
+
 PERIOD_RANGE = (
     "device[0].channels.jacket.period_ms: must be between 100 and 10000, the range the slice uses"
 )

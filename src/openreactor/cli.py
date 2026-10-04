@@ -630,6 +630,7 @@ def _serve(args: argparse.Namespace) -> int:
             lock_path=None,  # held below, for the server's whole life
             clock=clock,
             sleep=sleep,
+            on_event=_print,  # what the controller does, as run prints it
         )
 
     try:

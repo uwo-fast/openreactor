@@ -46,7 +46,15 @@ from openreactor.auth import verify_password
 from openreactor.config import Config
 from openreactor.controller import ControllerClosed
 from openreactor.ezo import EzoDeviceError, EzoStatusError
-from openreactor.service import Conflict, Invalid, NotFound, Service, Unavailable
+from openreactor.service import (
+    Conflict,
+    DeviceFailed,
+    Invalid,
+    NotFound,
+    Service,
+    Unavailable,
+    Unreachable,
+)
 from openreactor.storage import StorageError
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -313,7 +321,8 @@ class RunStopped(BaseModel):
 
 
 class Setpoint(BaseModel):
-    value: float = Field(allow_inf_nan=False)
+    # Strict: JSON true or "40" is not a temperature.
+    value: float = Field(strict=True, allow_inf_nan=False)
 
 
 class Calibration(BaseModel):
@@ -449,9 +458,11 @@ ERRORS: tuple[tuple[type[Exception], int], ...] = (
     (Conflict, 409),
     (Unavailable, 409),
     (Invalid, 422),
+    (Unreachable, 503),
     # The circuit refused the command or could not be reached.
     (EzoStatusError, 502),
     (EzoDeviceError, 502),
+    (DeviceFailed, 502),
     (StorageError, 503),
     (sqlite3.Error, 503),
     (ControllerClosed, 503),

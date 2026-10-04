@@ -7,7 +7,15 @@ from fakes import FakeActuator, FakeClock, FakeI2cBus, FakeRlht
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Controller
 from openreactor.ezo import EzoReader, Outcome, Result
-from openreactor.rlht import READS_PER_POLL, CrumbsPort, RlhtSlice, SliceError, opened_slices
+from openreactor.rlht import (
+    READS_PER_POLL,
+    CrumbsPort,
+    RlhtSlice,
+    SendFailed,
+    SliceBusy,
+    SliceError,
+    opened_slices,
+)
 
 SET_SETPOINTS, SET_OPEN_DUTY, SET_MODE, SET_PID, SET_PERIODS, SET_TC = (
     0x02,
@@ -439,7 +447,7 @@ def test_a_trip_is_detected_from_the_trip_count_alone_and_re_asserted_in_order()
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.trip_count += 1  # armed, not tripped now, but it tripped since
     rlht.commands.clear()
     checks = rlht.watchdog_replies
@@ -468,7 +476,7 @@ def test_a_reboot_is_re_asserted_with_the_desired_setpoints():
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.reboot()
     rlht.commands.clear()
     polls = rlht.state_replies
@@ -541,7 +549,7 @@ def test_a_trip_after_stop_all_does_not_restart_heating():
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     c.stop_all()
     tick(c, clock, 0.2)
     assert s.setpoints_deci == [0, 0]
@@ -690,7 +698,7 @@ def test_an_e_stop_sends_stop_all_and_nothing_resumes():
     s, clock = started(rlht)
     log: list[str] = []
     c, seen = controller_for(s, clock, FakeActuator("fan", log))
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.flags = 0x01  # e-stop pressed on the slice
     rlht.commands.clear()
     tick(c, clock, 3.0)
@@ -756,3 +764,222 @@ def test_three_failed_polls_make_the_slice_unreachable_and_an_answer_brings_it_b
     assert events(seen, "slice-reachable") and not s.unreachable
     # It may have restarted while silent: the watchdog is checked at once.
     assert rlht.watchdog_replies > before
+
+
+# Setpoints
+
+
+def test_a_setpoint_is_sent_at_once_and_kept_for_a_re_assert():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.commands.clear()
+    s.set_setpoint(1, 370)
+    s.set_setpoint(2, 450)
+    assert rlht.commands == [
+        (SET_SETPOINTS, struct.pack("<hh", 370, 0)),
+        (SET_SETPOINTS, struct.pack("<hh", 370, 450)),
+    ]
+    rlht.reboot()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-reboot")[-1].result == "re-asserted"
+    assert rlht.setpoints == [370, 450]
+
+
+def test_a_setpoint_that_is_not_sent_is_not_kept():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EREMOTEIO, "Remote I/O error")
+    with pytest.raises(SliceError, match="no answer on the bus"):
+        s.set_setpoint(1, 370)
+    del rlht.fail_opcodes[SET_SETPOINTS]
+    rlht.reboot()
+    tick(c, clock, 6.0)
+    # The re-assert sends what was last set successfully, not the failure.
+    assert rlht.setpoints == [0, 0]
+
+
+def test_a_setpoint_is_refused_while_the_e_stop_is_held():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.flags = 0x01
+    tick(c, clock, 1.5)
+    rlht.commands.clear()
+    with pytest.raises(SliceBusy, match="e-stop on heater is held"):
+        s.set_setpoint(1, 370)
+    assert SET_SETPOINTS not in ops(rlht) and s.setpoints_deci == [0, 0]
+
+
+def test_a_setpoint_is_refused_by_a_slice_that_cannot_take_one():
+    read_only, _ = started(FakeRlht(caps=0x3F))
+    assert read_only.read_only
+    with pytest.raises(SliceBusy, match="read-only"):
+        read_only.set_setpoint(1, 370)
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")] * 9
+    tick(c, clock, 3.0)
+    assert s.unreachable
+    with pytest.raises(SliceError, match="unreachable"):
+        s.set_setpoint(1, 370)
+    clock = FakeClock()
+    never_started = RlhtSlice(
+        device(),
+        CrumbsPort(FakeI2cBus({0x0A: FakeRlht()}), 0x0A, sleep=clock.sleep),
+        watchdog_timeout_ms=5000,
+        poll_s=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    with pytest.raises(SliceError, match="did not finish start-up"):
+        never_started.set_setpoint(1, 370)
+
+
+def test_setpoints_lost_with_no_trip_or_reboot_are_dropped_not_resumed():
+    # An e-stop pressed and released between two polls: the firmware zeroes
+    # the setpoints on the press, and GET_STATE never shows the flag.
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.5)
+    [changed] = events(seen, "slice-setpoints-changed")
+    assert changed.result == "safe state sent"
+    assert "ran 0 and 0 °C, not 40 and 0 °C" in changed.details
+    assert s.setpoints_deci == [0, 0]
+    # So a trip afterwards, found at the scheduled check, re-asserts nothing
+    # that heats.
+    rlht.trip()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert rlht.setpoints == [0, 0]
+    # A later change is a new one, and told again.
+    s.set_setpoint(1, 300)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.5)
+    assert len(events(seen, "slice-setpoints-changed")) == 2
+
+
+def test_setpoints_a_trip_zeroed_are_re_asserted_at_the_next_poll():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.trip()  # zeroes the slice's setpoints, as watchdogLogic() does
+    tick(c, clock, 1.5)
+    # Checked at once, not at the fifth poll, and re-asserted.
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert not events(seen, "slice-setpoints-changed")
+    assert rlht.setpoints == [400, 0] and s.setpoints_deci == [400, 0]
+
+
+def test_a_setpoint_that_landed_although_its_send_failed_is_stopped():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.fail_after[SET_SETPOINTS] = OSError(errno.ETIMEDOUT, "Connection timed out")
+    with pytest.raises(SendFailed):
+        s.set_setpoint(1, 700)
+    del rlht.fail_after[SET_SETPOINTS]
+    assert rlht.setpoints == [700, 0] and s.setpoints_deci == [0, 0]
+    tick(c, clock, 1.5)
+    assert events(seen, "slice-setpoints-changed")
+    assert rlht.setpoints == [0, 0]
+
+
+def test_an_unprotected_slice_drops_changed_setpoints_without_a_check():
+    rlht = FakeRlht(caps=0x3F)
+    s, clock = started(rlht, device(allow_unprotected=True))
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.0)
+    assert events(seen, "slice-setpoints-changed")
+    assert rlht.watchdog_replies == 0
+
+
+def test_a_read_only_slice_running_its_own_setpoints_is_left_alone():
+    rlht = FakeRlht(caps=0x3F)
+    s, clock = started(rlht)
+    assert s.read_only
+    c, seen = controller_for(s, clock)
+    rlht.setpoints = [500, 0]  # set by something else
+    rlht.commands.clear()
+    tick(c, clock, 3.0)
+    assert not events(seen, "slice-setpoints-changed") and rlht.commands == []
+
+
+def test_a_setpoint_set_at_any_tick_is_never_taken_for_drift():
+    # Set between a GET_STATE and the GET_WATCHDOG after it, a setpoint must
+    # not be judged against that older GET_STATE.
+    for offset in range(100):
+        rlht = FakeRlht()
+        s, clock = started(rlht)
+        c, seen = controller_for(s, clock)
+        tick(c, clock, offset / 10)
+        c.call(lambda s=s: s.set_setpoint(1, 400))
+        tick(c, clock, 3.0)
+        assert not events(seen, "slice-setpoints-changed"), f"dropped at tick {offset}"
+        assert rlht.setpoints == [400, 0] and s.setpoints_deci == [400, 0]
+
+
+def test_a_drop_that_keeps_failing_is_retried_each_poll_but_told_once():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EIO, "I/O error")
+    rlht.setpoints = [500, 0]  # set by something else
+    tick(c, clock, 10.0)
+    [failed] = events(seen, "slice-setpoints-changed")
+    assert failed.result.startswith("error: safe state not sent")
+    assert ops(rlht).count(SET_OPEN_DUTY) >= 8  # the safe state, tried each poll
+    del rlht.fail_opcodes[SET_SETPOINTS]
+    tick(c, clock, 3.0)
+    assert [e.result for e in events(seen, "slice-setpoints-changed")] == [
+        failed.result,
+        "safe state sent",
+    ]
+    assert rlht.setpoints == [0, 0]
+
+
+def test_a_setpoint_is_refused_while_a_drift_is_being_checked():
+    # After an e-stop tap no poll saw, a setpoint for one output must not
+    # restart the other: it waits for the check.
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    s.set_setpoint(2, 300)
+    rlht.setpoints = [0, 0]
+    refused = False
+    for _ in range(20):
+        tick(c, clock, 0.1)
+        try:
+            s.set_setpoint(1, 410)
+        except SliceBusy as e:
+            assert "being checked" in str(e)
+            refused = True
+            break
+        rlht.setpoints = [0, 0]  # accepted before the drift was seen: tap again
+    assert refused
+    tick(c, clock, 1.0)
+    assert events(seen, "slice-setpoints-changed")
+    s.set_setpoint(1, 410)
+    assert rlht.setpoints == [410, 0]
+
+
+def test_with_checks_failing_a_setpoint_is_not_told_a_check_is_pending():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.corrupt_replies = {GET_WATCHDOG}
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EIO, "I/O error")
+    rlht.setpoints = [500, 0]  # set by something else; the safe state fails
+    tick(c, clock, 10.0)
+    # The send is what fails, and that is what the operator is told.
+    with pytest.raises(SendFailed):
+        s.set_setpoint(1, 400)

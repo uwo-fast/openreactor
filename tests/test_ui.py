@@ -115,12 +115,20 @@ def test_start_a_run_stop_it_and_export_it(ui):
 
 
 def test_send_a_setpoint(ui):
-    _, client = ui
+    bench, client = ui
     assert 'hx-post="/ui/channels/jacket/setpoint"' in client.get("/controls").text
-    r = client.post("/ui/channels/jacket/setpoint", data={"value": "37"}, headers=HX)
-    # Answered by the service, as the API is, until the slices land.
-    assert r.status_code == 409
-    assert "slices are not supported yet" in r.text
+    controls = client.get("/controls").text
+    assert 'min="0" max="80.0" step="0.1"' in controls
+    r = client.post("/ui/channels/jacket/setpoint", data={"value": "37.04"}, headers=HX)
+    assert r.status_code == 200
+    assert "jacket set to 37 °C." in r.text
+    assert bench.rlht.setpoints == [370, 0]
+    r = client.post("/ui/channels/jacket/setpoint", data={"value": "81"}, headers=HX)
+    assert r.status_code == 422 and "above its max_setpoint" in r.text
+    assert (
+        client.post("/ui/channels/jacket/setpoint", data={"value": "nan"}, headers=HX).status_code
+        == 422
+    )
     assert (
         client.post("/ui/channels/jacket/setpoint", data={"value": "hot"}, headers=HX).status_code
         == 422
