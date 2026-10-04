@@ -36,6 +36,11 @@ dev = [
 requires = ["uv_build>=0.11,<0.13"]
 build-backend = "uv_build"
 
+[tool.uv]
+# Keep in step with build-system.requires. CI's setup-uv installs the newest
+# uv in this range, so the release build uses a backend inside the pin.
+required-version = ">=0.11,<0.13"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
