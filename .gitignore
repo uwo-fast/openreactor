@@ -240,3 +240,6 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Experiment records written at runtime
+experiments/*.json
