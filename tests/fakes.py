@@ -89,6 +89,10 @@ class FakePort:
             raise EzoStatusError(reply)
         return reply
 
+    def send_temperature(self, temperature_c: float) -> int:
+        self.sent.append(f"temperature {temperature_c}")
+        return 300
+
     def send_calibration_query(self) -> int:
         self.sent.append("cal?")
         return 300

@@ -152,3 +152,31 @@ def test_cal_reports_a_rejected_command(config: str, ports, capsys):
 def test_cal_needs_an_ezo_device(config: str, ports, capsys, name: str):
     assert cli.main(["ezo", "cal", "-c", config, name, "status"]) == 1
     assert f"{name!r} is not an EZO device" in capsys.readouterr().err
+
+
+def test_read_needs_an_ezo_device(tmp_path: Path, ports, capsys):
+    path = tmp_path / "slices.toml"
+    path.write_text(CONFIG.split('[[device]]\nname = "vessel_temp"')[0])
+    assert cli.main(["read", "--once", "-c", str(path)]) == 1
+    assert "lists no EZO devices" in capsys.readouterr().err
+
+
+def test_read_once_says_when_compensation_had_no_temperature(config: str, ports, capsys):
+    ports["vessel_temp"].replies.append(Outcome.FAIL)
+    assert cli.main(["read", "--once", "-c", config]) == 1
+    out = capsys.readouterr().out
+    assert "vessel_temp              failed" in out
+    assert "ph                            6.980 pH  (no RTD temperature" in out
+
+
+def test_cal_mid_warns_that_it_clears_the_other_points(config: str, ports, capsys):
+    assert cli.main(["ezo", "cal", "-c", config, "ph", "mid", "7"]) == 0
+    assert "clears the low and high points" in capsys.readouterr().err
+    assert cli.main(["ezo", "cal", "-c", config, "ph", "low", "4"]) == 0
+    assert "clears" not in capsys.readouterr().err
+
+
+def test_cal_rejects_nan(config: str, ports, capsys):
+    assert cli.main(["ezo", "cal", "-c", config, "ph", "mid", "nan"]) == 2
+    assert "finite" in capsys.readouterr().err
+    assert not any(s.startswith("cal") for s in ports["ph"].sent)

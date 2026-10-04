@@ -18,7 +18,9 @@ the openreactor and library versions, and the firmware commit on each slice.
 
 ## How to run the EZO checks
 
-With every EZO circuit in I2C mode and listed in the config:
+With every EZO circuit in I2C mode and listed in the config. Temperature
+compensation uses the `RT` command, which needs pH firmware V2.12 or later and
+DO firmware V2.13 or later; record each circuit's firmware (`i`) in the row.
 
 1. `openreactor read --once` prints one line per channel, and exits 0. pH, EC
    and DO show `(compensated at … °C)` when their config names an RTD in
@@ -27,6 +29,9 @@ With every EZO circuit in I2C mode and listed in the config:
    check `read --once` prints humidity, air temperature and dew point. No
    vendor example shows the three-value reply, so only a real circuit can
    confirm ezo-driver parses it.
-3. For each family, `openreactor ezo cal <device> status`, then one
+3. Check what the datasheets leave open: whether an RTD in °F or K expects its
+   `Cal,t` reference in that scale, and that an EC calibrated at two and three
+   points reports "two point" and "three point".
+4. For each family, `openreactor ezo cal <device> status`, then one
    calibration point with a reference solution, then `status` again shows the
    new calibration. Record the points used.

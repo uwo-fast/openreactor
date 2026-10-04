@@ -66,6 +66,8 @@ def _print_results(results: Sequence[Result]) -> None:
             line = f"{label:<24} {v.value:>10.3f} {v.unit}".rstrip()
             if r.temperature_c is not None:
                 line += f"  (compensated at {r.temperature_c:.2f} °C)"
+            elif r.compensation_missing:
+                line += "  (no RTD temperature: the circuit used the last one it was given)"
             print(line)
 
 
@@ -86,6 +88,9 @@ def read(args: argparse.Namespace) -> int:
         return 1
     devices = [d for d in config.devices if d.kind in FAMILIES]
     skipped = [d.name for d in config.devices if d.kind not in FAMILIES]
+    if not devices:
+        print(f"error: {args.config} lists no EZO devices", file=sys.stderr)
+        return 1
     if skipped:
         print(f"note: not reading {', '.join(skipped)}: slices are not read yet", file=sys.stderr)
 
@@ -150,6 +155,12 @@ def ezo_cal(args: argparse.Namespace) -> int:
             clear_calibration(port, sleep)
         elif action != "status":
             calibrate(family, port, action, args.value, sleep)
+            if family.name == "ph" and action == "mid":
+                print(
+                    "note: a mid-point calibration clears the low and high points; "
+                    "calibrate those after it",
+                    file=sys.stderr,
+                )
         print(f"{device.name}: {calibration_status(port, sleep)}")
         return 0
     except ValueError as e:

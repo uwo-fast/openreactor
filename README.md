@@ -61,11 +61,20 @@ openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
 ```
 
-Calibration points by family: pH `mid`, `low`, `high` (each with a pH value);
-ORP and RTD `ref` (with the reference mV or °C); EC `dry`, then `single`, or
-`low` and `high` (with the reference µS/cm); DO `atmospheric` and `zero` (no
-value); HUM `temperature` (with the reference °C). Before calibrating, the
-command checks the circuit at that address is the family the config names.
+Calibration points by family:
+
+- pH: `mid`, then `low` and `high`, each with a pH value. A `mid` calibration
+  clears the other two points, so do it first.
+- ORP and RTD: `ref`, with the reference mV or temperature.
+- EC: `dry`, then `single`, or `low` and `high`, with the reference µS/cm.
+- DO: `atmospheric` and `zero`, with no value.
+- HUM: `temperature`, with the reference °C.
+
+Before calibrating, the command checks the circuit at that address is the
+family the config names. EC and DO are first set back to their default
+compensation temperature (25 °C and 20 °C), as their datasheets require; the
+next `read` sends the measured temperature again. Don't run `ezo cal` while a
+`read` is running against the same circuits.
 
 ## Contributing
 
