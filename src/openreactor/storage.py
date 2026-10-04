@@ -123,10 +123,13 @@ class Store:
     ):
         self.path = path
         self._wall = wall
+        self._immutable = False
+        self._snapshot: tuple[int, int, bool, bool] | None = None
         if read_only:
             if not path.exists():
-                raise StorageError(f"{path} does not exist: no runs have been recorded")
-            self._db = self._open_read_only(path)
+                raise StorageError("no runs have been recorded yet (the database does not exist)")
+            self._db, self._immutable = self._open_read_only(path)
+            self._snapshot = self._file_state()
             self._check_version(self._db.execute("PRAGMA user_version").fetchone()[0])
             return
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,22 +173,36 @@ class Store:
                 time.sleep(0.01)
 
     @staticmethod
-    def _open_read_only(path: Path) -> sqlite3.Connection:
+    def _open_read_only(path: Path) -> tuple[sqlite3.Connection, bool]:
         uri = f"file:{path}?mode=ro"
         db = sqlite3.connect(uri, uri=True, timeout=SETUP_WAIT_S, isolation_level=None)
         try:
             db.execute("PRAGMA user_version").fetchone()
-            return db
+            return db, False
         except sqlite3.OperationalError as e:
             db.close()
             if "readonly" not in str(e):
                 raise
         # A WAL database can only be read through its -shm file, which this
         # user cannot create here. The file is absent only when no process
-        # has the database open, so nothing is writing it and it can be read
-        # as immutable.
+        # has the database open, so it is read as immutable; a writer that
+        # opens it meanwhile is caught by _check_unchanged.
         uri = f"file:{path}?mode=ro&immutable=1"
-        return sqlite3.connect(uri, uri=True, isolation_level=None)
+        return sqlite3.connect(uri, uri=True, isolation_level=None), True
+
+    def _file_state(self) -> tuple[int, int, bool, bool]:
+        st = self.path.stat()
+        wal = self.path.with_name(self.path.name + "-wal").exists()
+        shm = self.path.with_name(self.path.name + "-shm").exists()
+        return (st.st_size, st.st_mtime_ns, wal, shm)
+
+    def _check_unchanged(self) -> None:
+        """An immutable read is only sound if no writer opened the database
+        while it ran."""
+        if self._immutable and self._file_state() != self._snapshot:
+            raise StorageError(
+                "the database changed while it was being read (a run started); try again"
+            )
 
     def _check_version(self, version: int) -> None:
         if version != SCHEMA_VERSION:
@@ -246,6 +263,7 @@ class Store:
         rows = self._db.execute(
             "SELECT id, name, notes, started, ended, status FROM runs ORDER BY id"
         ).fetchall()
+        self._check_unchanged()
         return [Run(*row) for row in rows]
 
     def run(self, run: int) -> Run | None:
@@ -341,6 +359,7 @@ class Store:
             "config": config,
             "profile": profile,
         }
+        self._check_unchanged()
         # "x": never overwrite an earlier export.
         with zipfile.ZipFile(destination, "x", zipfile.ZIP_DEFLATED) as z:
             z.writestr("readings.csv", readings.getvalue())

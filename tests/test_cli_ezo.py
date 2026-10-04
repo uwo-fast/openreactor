@@ -410,7 +410,7 @@ def test_run_does_not_touch_the_database_while_another_controller_runs(
 
 def test_export_of_an_unknown_run_fails_cleanly(config: str, database: Path, capsys):
     assert cli.main(["export", "-c", config, "9"]) == 1
-    assert "does not exist: no runs have been recorded" in capsys.readouterr().err
+    assert "no runs have been recorded yet" in capsys.readouterr().err
     from openreactor.storage import Store
 
     Store(database).close()
@@ -445,3 +445,34 @@ def test_run_interrupted_before_it_starts_exits_130(
     assert cli.main(["run", "-c", config, "--name", "brew"]) == 130
     assert "interrupted before the run started" in capsys.readouterr().err
     assert not database.exists()
+
+
+def test_a_long_database_lock_still_ends_the_run_interrupted(
+    config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """A lock held past the recorder's short wait fails the write; the run
+    is then marked interrupted when it ends, outside the tick."""
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+    state: dict[str, sqlite3.Connection | None] = {"other": None}
+
+    def sleep(s: float) -> None:
+        clock.sleep(s)
+        if clock.now > 3.0 and state["other"] is None:
+            other = sqlite3.connect(database, isolation_level=None)
+            other.execute("BEGIN IMMEDIATE")
+            state["other"] = other
+        if clock.now > 6.0:
+            other = state["other"]
+            if other is not None and other.in_transaction:
+                other.execute("ROLLBACK")
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 1
+    assert "run 1: interrupted (database is locked)" in capsys.readouterr().err
+    from openreactor.storage import Store
+
+    store = Store(database)
+    assert [r.status for r in store.runs()] == ["interrupted"]
+    store.close()

@@ -259,16 +259,19 @@ def _run(args: argparse.Namespace, config: Config) -> int:
 
 
 def _end_run(store: Store, run: int, recorder: Recorder | None) -> None:
-    if recorder is not None and recorder.failed is not None:
-        print(f"run {run}: interrupted ({recorder.failed})", file=sys.stderr)
-        return
+    """Mark the run stopped, or interrupted if recording failed. This runs
+    after stop-all, outside the tick, so it may wait for the database."""
+    failed = recorder.failed if recorder is not None else None
+    status = "stopped" if failed is None else "interrupted"
     store.setup()
     try:
-        store.end_run(run, "stopped")
+        # The recorder may not have managed to mark it within its short wait.
+        store.end_run(run, status)
     except sqlite3.Error as e:
-        print(f"run {run}: could not be marked stopped ({e})", file=sys.stderr)
+        print(f"run {run}: could not be marked {status} ({e})", file=sys.stderr)
         return
-    print(f"run {run}: stopped", file=sys.stderr)
+    reason = f" ({failed})" if failed is not None else ""
+    print(f"run {run}: {status}{reason}", file=sys.stderr)
 
 
 def _open_for_reading(config: Config) -> Store | None:

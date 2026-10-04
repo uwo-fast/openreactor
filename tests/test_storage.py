@@ -286,7 +286,7 @@ def test_two_first_opens_do_not_race(tmp_path: Path):
 
 def test_read_only_open_lists_without_creating(tmp_path: Path):
     path = tmp_path / "openreactor.db"
-    with pytest.raises(StorageError, match="no runs have been recorded"):
+    with pytest.raises(StorageError, match="no runs have been recorded yet"):
         Store(path, read_only=True)
     assert not path.exists()
     s = Store(path)
@@ -309,3 +309,23 @@ def test_export_never_overwrites(store: Store, tmp_path: Path):
     store.export(run, out)
     with pytest.raises(FileExistsError):
         store.export(run, out)
+
+
+def test_an_immutable_read_refuses_when_a_writer_appears(tmp_path: Path):
+    path = tmp_path / "openreactor.db"
+    s = Store(path)
+    s.start_run("a", "c")
+    s.close()
+    tmp_path.chmod(0o555)
+    try:
+        ro = Store(path, read_only=True)
+    finally:
+        tmp_path.chmod(0o755)
+    assert ro._immutable  # pyright: ignore[reportPrivateUsage]
+    assert [r.name for r in ro.runs()] == ["a"]
+    writer = Store(path)  # a run starts while the export is reading
+    writer.start_run("b", "c")
+    with pytest.raises(StorageError, match="changed while it was being read"):
+        ro.runs()
+    writer.close()
+    ro.close()
