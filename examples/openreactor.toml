@@ -22,6 +22,12 @@ ezo_period_s = 2.0
 # long. Between 3 x slice_poll_s and 65535 ms.
 watchdog_timeout_ms = 5000
 
+[storage]
+# Where runs are recorded. Left unset, each user gets
+# ~/.local/state/openreactor/openreactor.db; a system-wide install would set,
+# for example:
+# database = "/var/lib/openreactor/openreactor.db"
+
 # Set each address to what your board answers on. The EZO addresses below are
 # the factory defaults. Addresses are 7-bit, 0x08 to 0x77, and a bus and
 # address pair may be used once.

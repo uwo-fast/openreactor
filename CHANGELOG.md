@@ -27,6 +27,11 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   else fails, EZO commands that run between reads instead of during them,
   and a machine-wide lock so only one controller runs. `openreactor read`
   reads once by default; `read --follow` streams.
+- Recorded runs in SQLite: `openreactor run --name X` records readings and
+  events until stopped, `openreactor runs` lists them, and `openreactor
+  export N` writes a zip of `readings.csv`, `events.csv` and `run.json`. A
+  failing write stops recording and marks the run interrupted without
+  stopping control.
 
 ### Removed
 

@@ -382,3 +382,13 @@ def test_rejects_a_bus_that_is_not_linux_i2c(bus: str):
     data = config()
     data["device"][2]["bus"] = bus
     assert problems(data) == [f"device[2].bus: {bus!r} is not a Linux I2C bus such as /dev/i2c-1"]
+
+
+def test_storage_database_must_be_absolute():
+    parsed = parse_config(config(storage={"database": "/var/lib/openreactor/openreactor.db"}))
+    assert parsed.storage.database == "/var/lib/openreactor/openreactor.db"
+    assert parse_config(config()).storage.database is None
+    assert problems(config(storage={"database": "data.db"})) == [
+        "storage.database: must be an absolute path"
+    ]
+    assert problems(config(storage={"path": "/x"})) == ["storage.path: unknown key"]

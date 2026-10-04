@@ -59,6 +59,12 @@ class ControllerConfig:
 
 
 @dataclass(frozen=True)
+class StorageConfig:
+    # None means the per-user default; see openreactor.storage.default_path().
+    database: str | None = None
+
+
+@dataclass(frozen=True)
 class ChannelConfig:
     """An actuated output on a slice: an RLHT heater or a DCMT motor."""
 
@@ -83,6 +89,7 @@ class DeviceConfig:
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     devices: tuple[DeviceConfig, ...] = ()
 
 
@@ -182,9 +189,10 @@ class _Parser:
         return True
 
     def config(self, data: dict[str, Any]) -> Config:
-        self.unknown_keys(data, ("server", "controller", "device"), "")
+        self.unknown_keys(data, ("server", "controller", "storage", "device"), "")
         server = self.server(data.get("server", {}))
         controller = self.controller(data.get("controller", {}))
+        storage = self.storage(data.get("storage", {}))
 
         raw_devices = data.get("device", [])
         if not isinstance(raw_devices, list):
@@ -196,7 +204,25 @@ class _Parser:
         devices = [(path, d) for path, d in indexed if d is not None]
 
         self.cross_checks(devices, controller)
-        return Config(server=server, controller=controller, devices=tuple(d for _, d in devices))
+        return Config(
+            server=server,
+            controller=controller,
+            storage=storage,
+            devices=tuple(d for _, d in devices),
+        )
+
+    def storage(self, raw: Any) -> StorageConfig:
+        t = self.table(raw, "storage")
+        if t is None:
+            return StorageConfig()
+        self.unknown_keys(t, ("database",), "storage")
+        database = None
+        if "database" in t:
+            database = self.string(t, "database", "storage")
+            if database is not None and not database.startswith("/"):
+                self.error("storage.database", "must be an absolute path")
+                database = None
+        return StorageConfig(database)
 
     def server(self, raw: Any) -> ServerConfig:
         default = ServerConfig()
