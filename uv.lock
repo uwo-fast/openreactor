@@ -155,10 +155,15 @@ wheels = [
 
 [[package]]
 name = "ezo-driver"
-version = "0.5.1"
-source = { git = "https://github.com/feastorg/ezo-driver?rev=9399a61d8b1d95960f21a13ff82bb0e12537a34c#9399a61d8b1d95960f21a13ff82bb0e12537a34c" }
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cffi" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/36/6d/68f36718123a740ec909c539f4a160dd05f2a0abd6309b7877ff156159f8/ezo_driver-0.6.0.tar.gz", hash = "sha256:fc7c05a7b64e9b9de0b13d0811aa7c0cf7e3121cb08f6a04b00a950d4f3c8f9d", size = 74929, upload-time = "2026-10-04T06:23:26.099Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/b6/1b135779d1df5ab7cc31ad1d728b08d7fa3dd3d7a4840c08742023e0c64d/ezo_driver-0.6.0-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4acdca81f526d788fed179bf5b04d29c321823de262d687c65ea8e127b94d3a2", size = 606150, upload-time = "2026-10-04T06:23:23.059Z" },
+    { url = "https://files.pythonhosted.org/packages/65/53/9f84c374a63dc49f57defc066f710d06707d268f963bfb8ae7ee2b52a815/ezo_driver-0.6.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:df42614ea2dee687b351d3598c3c8b2a27f6eac3429b0be69d95bc3017c68b66", size = 614066, upload-time = "2026-10-04T06:23:24.783Z" },
 ]
 
 [[package]]
@@ -285,7 +290,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ezo-driver", git = "https://github.com/feastorg/ezo-driver?rev=9399a61d8b1d95960f21a13ff82bb0e12537a34c" },
+    { name = "ezo-driver", specifier = ">=0.6,<0.7" },
     { name = "fastapi", specifier = ">=0.142,<0.143" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },
     { name = "pydantic", specifier = ">=2.13,<3" },

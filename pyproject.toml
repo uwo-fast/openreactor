@@ -15,7 +15,8 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "ezo-driver>=0.5.1",
+    # 0.x: a minor release may break the API.
+    "ezo-driver>=0.6,<0.7",
     # Capped at the next minor (FastAPI) or major (Starlette, pydantic):
     # their breaking changes land there.
     "fastapi>=0.142,<0.143",
@@ -50,10 +51,6 @@ build-backend = "uv_build"
 # Keep in step with build-system.requires. CI's setup-uv installs the newest
 # uv in this range, so the release build uses a backend inside the pin.
 required-version = ">=0.11,<0.13"
-
-[tool.uv.sources]
-# Until feastorg/ezo-driver#12 publishes it to PyPI.
-ezo-driver = { git = "https://github.com/feastorg/ezo-driver", rev = "9399a61d8b1d95960f21a13ff82bb0e12537a34c" }
 
 [tool.ruff]
 line-length = 100
