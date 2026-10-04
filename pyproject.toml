@@ -14,7 +14,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
 ]
-dependencies = []
+dependencies = ["ezo-driver>=0.5.1"]
 
 [project.scripts]
 openreactor = "openreactor.cli:main"
@@ -40,6 +40,10 @@ build-backend = "uv_build"
 # Keep in step with build-system.requires. CI's setup-uv installs the newest
 # uv in this range, so the release build uses a backend inside the pin.
 required-version = ">=0.11,<0.13"
+
+[tool.uv.sources]
+# Until feastorg/ezo-driver#12 publishes it to PyPI.
+ezo-driver = { git = "https://github.com/feastorg/ezo-driver", rev = "9399a61d8b1d95960f21a13ff82bb0e12537a34c" }
 
 [tool.ruff]
 line-length = 100

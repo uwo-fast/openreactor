@@ -17,6 +17,11 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
 - A TOML configuration file that lists every device, validated before
   anything starts: `openreactor check-config <file>`. A commented example is
   in `examples/openreactor.toml`.
+- Atlas EZO pH, ORP, RTD, EC, DO and HUM circuits over ezo-driver: each
+  circuit's type is checked against the config at startup, reads are
+  split-phase so no circuit waits on another, and pH, EC and DO compensate
+  with the last RTD temperature. `openreactor read` prints the readings, and
+  `openreactor ezo cal` shows, sets and clears calibration.
 
 ### Removed
 

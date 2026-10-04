@@ -30,7 +30,9 @@ and usage instructions.
 
 ## Development
 
-Needs [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/).
+Needs [uv](https://docs.astral.sh/uv/), [just](https://just.systems/) and a C
+compiler: [ezo-driver](https://github.com/feastorg/ezo-driver) is installed from
+git, and built from source, until it is published to PyPI.
 
 ```sh
 git clone https://github.com/uwo-fast/openreactor.git
@@ -44,6 +46,26 @@ To validate a configuration file, run
 `just run check-config examples/openreactor.toml`. The example lists every
 setting with a comment. `just --list` shows the other recipes. Optionally, install the pre-commit hooks
 with `pre-commit install`.
+
+## Command line
+
+The device commands read `/etc/openreactor/openreactor.toml` unless given
+`-c FILE`.
+
+```sh
+openreactor check-config FILE        # validate a config file
+openreactor read --once              # read every EZO sensor once
+openreactor read                     # read them every ezo_period_s until Ctrl-C
+openreactor ezo cal ph status        # show a circuit's calibration
+openreactor ezo cal ph mid 7.00      # calibrate a point
+openreactor ezo cal ph clear --yes   # erase a circuit's calibration
+```
+
+Calibration points by family: pH `mid`, `low`, `high` (each with a pH value);
+ORP and RTD `ref` (with the reference mV or °C); EC `dry`, then `single`, or
+`low` and `high` (with the reference µS/cm); DO `atmospheric` and `zero` (no
+value); HUM `temperature` (with the reference °C). Before calibrating, the
+command checks the circuit at that address is the family the config names.
 
 ## Contributing
 
