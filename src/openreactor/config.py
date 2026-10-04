@@ -40,6 +40,8 @@ def _hex(n: int) -> str:
 
 
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
+# A Linux i2c-dev bus, e.g. /dev/i2c-1.
+I2C_BUS = re.compile(r"/dev/i2c-(\d+)")
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,9 @@ class _Parser:
         if name is not None and not self.name(name, f"{path}.name"):
             name = None
         bus = self.string(t, "bus", path)
+        if bus is not None and not I2C_BUS.fullmatch(bus):
+            self.error(f"{path}.bus", f"{bus!r} is not a Linux I2C bus such as /dev/i2c-1")
+            bus = None
 
         address = None
         if "address" not in t:

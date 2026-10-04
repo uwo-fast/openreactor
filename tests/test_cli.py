@@ -43,7 +43,7 @@ def hook(event, args):
     elif event in ("sqlite3.connect", "socket.__new__", "socket.connect", "socket.bind"):
         seen.append((event, args))
 sys.addaudithook(hook)
-import openreactor, openreactor.config, openreactor.cli
+import openreactor, openreactor.config, openreactor.cli, openreactor.ezo
 print(seen)
 """
     out = subprocess.run(

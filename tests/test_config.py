@@ -375,3 +375,10 @@ def test_rejects_invalid_toml(tmp_path: Path):
     with pytest.raises(ConfigError) as e:
         load_config(bad)
     assert "not valid TOML" in str(e.value)
+
+
+@pytest.mark.parametrize("bus", ["/dev/i2c", "i2c-1", "/dev/i2c-1x", "/dev/spidev0.0"])
+def test_rejects_a_bus_that_is_not_linux_i2c(bus: str):
+    data = config()
+    data["device"][2]["bus"] = bus
+    assert problems(data) == [f"device[2].bus: {bus!r} is not a Linux I2C bus such as /dev/i2c-1"]
