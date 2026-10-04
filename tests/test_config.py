@@ -158,7 +158,7 @@ def test_rejects_watchdog_below_three_polls():
 
 
 def test_accepts_watchdog_at_exactly_three_polls():
-    parse_config(config(controller={"slice_poll_s": 0.1, "watchdog_timeout_ms": 300}))
+    parse_config(config(controller={"slice_poll_s": 0.2, "watchdog_timeout_ms": 600}))
     parse_config(config(controller={"slice_poll_s": 1.0, "watchdog_timeout_ms": 3000}))
 
 
@@ -394,17 +394,35 @@ def test_storage_database_must_be_absolute():
     assert problems(config(storage={"path": "/x"})) == ["storage.path: unknown key"]
 
 
-def test_rlht_gains_and_period_are_optional_and_parsed():
+def tuned_heater(jacket: dict[str, Any], lid: dict[str, Any] | None = None) -> dict[str, Any]:
     data = config()
     data["device"][0]["channels"] = {
-        "jacket": {"output": 1, "tc": 1, "kp": 2.5, "ki": 0.1, "kd": 0, "period_ms": 2000}
+        "jacket": {"output": 1, "tc": 1, **jacket},
+        "lid": {"output": 2, "tc": 2, **(lid if lid is not None else jacket)},
     }
+    return data
+
+
+def test_rlht_gains_and_period_are_optional_and_parsed():
+    data = tuned_heater({"kp": 2.5, "ki": 0.1, "kd": 0, "period_ms": 2000})
     [heater] = [d for d in parse_config(data).devices if d.kind == "rlht"]
-    [jacket] = heater.channels
+    jacket = heater.channels[0]
     assert (jacket.kp, jacket.ki, jacket.kd, jacket.period_ms) == (2.5, 0.1, 0.0, 2000)
+    data = config()
     data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1}}
     [heater] = [d for d in parse_config(data).devices if d.kind == "rlht"]
     assert (heater.channels[0].kp, heater.channels[0].period_ms) == (None, None)
+
+
+def test_a_period_alone_needs_no_other_output():
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "period_ms": 2000}}
+    parse_config(data)
+
+
+PERIOD_RANGE = (
+    "device[0].channels.jacket.period_ms: must be between 100 and 10000, the range the slice uses"
+)
 
 
 @pytest.mark.parametrize(
@@ -421,14 +439,47 @@ def test_rlht_gains_and_period_are_optional_and_parsed():
             "device[0].channels.jacket.kp: must be a multiple of 0.1, as the slice stores it",
         ),
         ({"kp": True, "ki": 1, "kd": 1}, "device[0].channels.jacket.kp: must be a number"),
-        ({"period_ms": 0}, "device[0].channels.jacket.period_ms: must be between 1 and 65535"),
-        ({"period_ms": 70000}, "device[0].channels.jacket.period_ms: must be between 1 and 65535"),
+        (
+            {"kp": 1, "ki": 0, "kd": 1},
+            "device[0].channels.jacket.ki: must be above 0: with ki = 0 the slice's PID keeps "
+            "its integral, and a heater can stay on after its setpoint goes to 0",
+        ),
+        (
+            {"period_ms": 99},
+            PERIOD_RANGE,
+        ),
+        (
+            {"period_ms": 10001},
+            PERIOD_RANGE,
+        ),
     ],
 )
 def test_rlht_gains_and_period_are_checked(channel: dict[str, Any], problem: str):
     data = config()
     data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, **channel}}
-    assert problems(data) == [problem]
+    assert problem in problems(data)
+
+
+GAINS_ON_BOTH = (
+    "device[0].channels: gains (kp, ki, kd) must be set on a channel for each of the slice's "
+    "two outputs, or on none: the slice sets both outputs' gains at once"
+)
+
+
+def test_gains_on_one_output_are_refused():
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "kp": 1, "ki": 1, "kd": 1}}
+    assert problems(data) == [GAINS_ON_BOTH]
+
+
+def test_gains_on_one_of_two_channels_are_refused():
+    assert problems(tuned_heater({"kp": 1, "ki": 1, "kd": 1}, lid={})) == [GAINS_ON_BOTH]
+
+
+def test_a_slice_poll_shorter_than_two_ticks_is_refused():
+    assert problems(config(controller={"slice_poll_s": 0.1, "watchdog_timeout_ms": 300})) == [
+        "controller.slice_poll_s: must be at least 0.2 s: a poll takes two 0.1 s ticks"
+    ]
 
 
 def test_gains_are_not_for_motors():

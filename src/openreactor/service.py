@@ -376,7 +376,7 @@ def running(
                 controller = Controller(
                     reader,
                     [*actuators, *slices],
-                    polled=slices,
+                    polled=[s for s in slices if s.started],
                     ezo_period_s=config.controller.ezo_period_s,
                     auto_read=True,
                     clock=clock,

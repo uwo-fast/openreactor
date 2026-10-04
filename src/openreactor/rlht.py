@@ -21,8 +21,9 @@ both sent even if the first fails. It never switches the slice to open loop.
 
 The poll is GET_STATE every ``slice_poll_s``, split across two controller
 ticks like an EZO read: SET_REPLY on one, the read on the next, so a tick
-never waits on the bus. Any valid frame refreshes the slice's watchdog, so
-the poll is also the keep-alive.
+never waits on the bus. The firmware feeds its watchdog when it builds a
+reply, so the poll is also the keep-alive, and a poll whose read fails does
+not feed it.
 """
 
 from __future__ import annotations
@@ -83,10 +84,6 @@ from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Event
 from openreactor.ezo import Outcome, Result, Value
 
-#: Start-up reads that fail to decode are retried this many times in all;
-#: the Pi's I2C controller corrupts a few percent of first reads.
-STARTUP_ATTEMPTS = 3
-
 
 class SliceError(Exception):
     """A slice that cannot be used: it did not answer, is not an RLHT, is
@@ -95,7 +92,9 @@ class SliceError(Exception):
 
 class SlicePort(Protocol):
     """One slice on the bus. ``stage`` asks for a reply (SET_REPLY);
-    ``read`` reads it and checks it is the reply asked for."""
+    ``read`` reads it and checks it is the reply asked for. ``query`` does
+    both with a pause, retrying a corrupt reply or a device that did not
+    answer; it is for start-up, which may wait."""
 
     def send(self, opcode: int, payload: bytes) -> None: ...
 
@@ -103,10 +102,18 @@ class SlicePort(Protocol):
 
     def read(self, opcode: int) -> bytes: ...
 
+    def query(self, opcode: int) -> bytes: ...
+
 
 class CrumbsPort:
-    def __init__(self, bus: Bus, address: int, type_id: int = RLHT_TYPE_ID):
-        self._crumbs = Controller(bus)
+    def __init__(
+        self,
+        bus: Bus,
+        address: int,
+        type_id: int = RLHT_TYPE_ID,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
+        self._crumbs = Controller(bus, sleep=sleep)
         self.address = address
         self.type_id = type_id
 
@@ -119,6 +126,9 @@ class CrumbsPort:
     def read(self, opcode: int) -> bytes:
         reply = self._crumbs.read_expect(self.address, type_id=self.type_id, opcode=opcode)
         return reply.data
+
+    def query(self, opcode: int) -> bytes:
+        return self._crumbs.query(self.address, type_id=self.type_id, opcode=opcode).data
 
 
 class RlhtSlice:
@@ -144,6 +154,8 @@ class RlhtSlice:
         self._sleep = sleep
         self._wall = wall
         self.caps: BreadCapsResult | None = None
+        self.identified = False
+        self.started = False
         self.protected = False
         # Read-only: unprotected and not allowed to be; never commanded
         # beyond the safe state.
@@ -154,15 +166,7 @@ class RlhtSlice:
     # Start-up: blocking, before the controller ticks.
 
     def _query(self, opcode: int) -> bytes:
-        for attempt in range(STARTUP_ATTEMPTS):
-            self.port.stage(opcode)
-            self._sleep(QUERY_DELAY_S)
-            try:
-                return self.port.read(opcode)
-            except CrumbsError:
-                if attempt + 1 == STARTUP_ATTEMPTS:
-                    raise
-        raise AssertionError("unreachable")
+        return self.port.query(opcode)
 
     def start(self) -> list[Event]:
         """Check, make safe, arm and configure the slice. Raises SliceError
@@ -171,6 +175,9 @@ class RlhtSlice:
             version = bread_parse_version(self._query(BREAD_OP_GET_VERSION))
         except CrumbsError as e:
             raise SliceError(f"no RLHT version reply: {e}") from e
+        # It answered as an RLHT: from here on it is in stop-all, even if a
+        # later step fails.
+        self.identified = True
         if bread_check_crumbs_compat(version.crumbs_ver) != 0:
             raise SliceError(
                 f"built with CRUMBS {_crumbs_version(version.crumbs_ver)}; "
@@ -208,6 +215,7 @@ class RlhtSlice:
             self._configure(rlht_parse_state_payload(self._query(RLHT_OP_GET_STATE)))
 
         self._next_poll = self._clock()
+        self.started = True
         protection = (
             f"watchdog armed at {self.watchdog_timeout_ms} ms"
             if self.protected
@@ -231,8 +239,8 @@ class RlhtSlice:
     def _configure(self, state: RlhtStateResult) -> None:
         """Closed-loop mode, thermocouple select, periods and gains: each only
         if the slice can take it, and periods and gains only if the config
-        sets them. An output with no channel keeps what the slice has, except
-        for gains, which have no read-back and go as zero."""
+        sets them. An output with no channel keeps the thermocouple and period
+        the slice has; gains go only when the config sets both outputs'."""
         flags = self.caps.flags if self.caps else 0
         by_output = {ch.output: ch for ch in self.device.channels}
 
@@ -246,29 +254,28 @@ class RlhtSlice:
             p1 = _setting(by_output, 1, "period_ms", state.period1_ms)
             p2 = _setting(by_output, 2, "period_ms", state.period2_ms)
             self.port.send(RLHT_OP_SET_PERIODS, rlht_send_set_periods(p1, p2))
-        if flags & RLHT_CAP_PID_TUNING and any(ch.kp is not None for ch in by_output.values()):
-            gains: list[int] = []
-            for o in (1, 2):
-                ch = by_output.get(o)
-                for g in (ch.kp, ch.ki, ch.kd) if ch and ch.kp is not None else (0.0, 0.0, 0.0):
-                    gains.append(round((g or 0.0) * 10))
-            self.port.send(RLHT_OP_SET_PID, rlht_send_set_pid_x10(*gains))
+        gains = [by_output[o] for o in (1, 2) if o in by_output]
+        if (
+            flags & RLHT_CAP_PID_TUNING
+            and len(gains) == 2
+            and all(ch.kp is not None and ch.ki is not None and ch.kd is not None for ch in gains)
+        ):
+            # Both outputs' gains go in one command and cannot be read back,
+            # so they are sent only when the config gives all six: never a
+            # filled-in value (check-config refuses anything less).
+            x10 = [round(g * 10) for ch in gains for g in (ch.kp, ch.ki, ch.kd) if g is not None]
+            self.port.send(RLHT_OP_SET_PID, rlht_send_set_pid_x10(*x10))
 
     # Stop-all
 
     def send_safe(self) -> None:
-        """Setpoints to zero, then open-loop duty to zero: both, always."""
-        failure: BaseException | None = None
-        for opcode, payload in (
-            (RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0)),
-            (RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0)),
-        ):
-            try:
-                self.port.send(opcode, payload)
-            except (CrumbsError, OSError) as e:
-                failure = failure or e
-        if failure is not None:
-            raise failure
+        """Setpoints to zero, then open-loop duty to zero: both, always, even
+        if the first fails or is interrupted. Open-loop duty does nothing in
+        closed loop; it stops a slice someone left in open loop."""
+        try:
+            self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0))
+        finally:
+            self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
 
     # The poll: called each controller tick, never waits.
 
@@ -350,8 +357,10 @@ def opened_slices(
     wall: Callable[[], float] = time.time,
 ) -> Iterator[tuple[list[RlhtSlice], list[Result | Event]]]:
     """Open each RLHT's bus (one per path, shared) and start each slice.
-    Yields the slices that started, and the start-up events and problems.
-    The buses close on the way out; send stop-all before that."""
+    Yields every slice that answered as an RLHT, for stop-all, whether or
+    not its start-up finished (``started`` says which, for polling), and the
+    start-up events and problems. The buses close on the way out; send
+    stop-all before that."""
     buses: dict[str, Bus] = {}
     slices: list[RlhtSlice] = []
     reports: list[Result | Event] = []
@@ -364,15 +373,19 @@ def opened_slices(
                     buses[d.bus] = open_bus(d.bus)
                 rlht = RlhtSlice(
                     d,
-                    CrumbsPort(buses[d.bus], d.address),
+                    CrumbsPort(buses[d.bus], d.address, sleep=sleep),
                     watchdog_timeout_ms=watchdog_timeout_ms,
                     poll_s=poll_s,
                     clock=clock,
                     sleep=sleep,
                     wall=wall,
                 )
-                reports += rlht.start()
-                slices.append(rlht)
+                try:
+                    reports += rlht.start()
+                finally:
+                    if rlht.identified:
+                        # In stop-all whether or not start-up finished.
+                        slices.append(rlht)
             except (SliceError, CrumbsError, OSError, ValueError) as e:
                 reports.append(Result(d.name, Outcome.ERROR, detail=_describe(e)))
         yield slices, reports

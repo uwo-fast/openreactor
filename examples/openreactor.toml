@@ -43,10 +43,13 @@ kind = "rlht"
 bus = "/dev/i2c-1"
 address = 0x0A
 channels.jacket = { label = "Jacket heater", output = 1, tc = 1 }
-# Optional per channel, each sent only if set: PID gains (kp, ki and kd
-# together, 0 to 25.5 in steps of 0.1) and the time-proportioning period in ms.
-# Unset, the slice keeps its own.
+# Optional per channel, each sent only if set: the time-proportioning period
+# (period_ms, 100 to 10000) and PID gains (kp, ki and kd together, 0 to 25.5
+# in steps of 0.1, ki above 0). The slice takes both outputs' gains at once,
+# so gains are set on a channel for each output or on none. Unset, the slice
+# keeps its own. For example, both outputs tuned:
 # channels.jacket = { label = "Jacket heater", output = 1, tc = 1, kp = 2.0, ki = 0.1, kd = 0.5, period_ms = 2000 }
+# channels.lid = { label = "Lid heater", output = 2, tc = 2, kp = 2.0, ki = 0.1, kd = 0.5 }
 # A slice without the watchdog capability is read-only unless this is true.
 # If openreactor stops or the Pi loses power, such a slice keeps its last
 # output.

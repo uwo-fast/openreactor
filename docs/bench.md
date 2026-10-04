@@ -66,8 +66,8 @@ On 64-bit Raspberry Pi OS (Bookworm or Trixie):
 
    A circuit that is missing, at the wrong address or of the wrong family is
    reported by name, and the others are still read. `read` never touches a
-   slice; `run` and `serve` start the RLHT slices (see below), and DCMT slices
-   are skipped with a note until #25.
+   slice; `run` and `serve` start the RLHT slices, and DCMT slices are skipped
+   with a note until #25.
 
 5. Check the controller lock across users: run `openreactor read --follow` as
    one user, then `sudo openreactor read` in another terminal. The second

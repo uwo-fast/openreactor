@@ -78,7 +78,8 @@ and `ezo cal` never touch one. Start-up checks the slice is an RLHT built with
 CRUMBS 0.12.0 or later, sends its safe state (setpoints to zero, then open-loop
 duty to zero), arms its command watchdog with `watchdog_timeout_ms` and
 confirms it, then sets closed-loop mode, the thermocouples, and any periods and
-PID gains the config sets. A slice without the watchdog capability stays
+PID gains the config sets. Gains go only when the config gives them for both of
+the slice's outputs, since the slice takes both at once; nothing is filled in. A slice without the watchdog capability stays
 read-only unless its config sets `allow_unprotected = true`. Each slice is then
 polled every `slice_poll_s`, which also keeps its watchdog fed, and its
 channels' temperature, setpoint and duty are read and recorded like any

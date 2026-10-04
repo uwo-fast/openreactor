@@ -36,7 +36,7 @@ def started(rlht: FakeRlht, config: DeviceConfig | None = None) -> tuple[RlhtSli
     clock = FakeClock()
     s = RlhtSlice(
         config or device(),
-        CrumbsPort(FakeI2cBus({0x0A: rlht}), 0x0A),
+        CrumbsPort(FakeI2cBus({0x0A: rlht}), 0x0A, sleep=clock.sleep),
         watchdog_timeout_ms=5000,
         poll_s=1.0,
         clock=clock,
@@ -70,7 +70,7 @@ def test_start_up_reports_what_it_found():
     clock = FakeClock()
     s = RlhtSlice(
         device(),
-        CrumbsPort(FakeI2cBus({0x0A: rlht}), 0x0A),
+        CrumbsPort(FakeI2cBus({0x0A: rlht}), 0x0A, sleep=clock.sleep),
         watchdog_timeout_ms=5000,
         poll_s=1.0,
         clock=clock,
@@ -126,12 +126,13 @@ def test_a_watchdog_that_does_not_arm_is_refused():
         started(FakeRlht(arms=False))
 
 
-def test_gains_and_periods_go_only_when_the_config_sets_them():
+def test_gains_go_only_when_the_config_gives_both_outputs():
     rlht = FakeRlht()
-    tuned = ChannelConfig(
+    jacket = ChannelConfig(
         "jacket", "Jacket", output=1, tc=2, kp=2.3, ki=0.1, kd=0.0, period_ms=2000
     )
-    started(rlht, device(tuned))
+    lid = ChannelConfig("lid", "Lid", output=2, tc=1, kp=1.0, ki=0.5, kd=0.2)
+    started(rlht, device(jacket, lid))
     assert ops(rlht) == [
         SET_SETPOINTS,
         SET_OPEN_DUTY,
@@ -142,17 +143,35 @@ def test_gains_and_periods_go_only_when_the_config_sets_them():
         SET_PID,
     ]
     commands = dict(rlht.commands)
-    # Output 2 has no channel: it keeps its thermocouple and period, and
-    # its gains, which cannot be read back, go as zero.
+    assert commands[SET_TC] == bytes((2, 1))
+    # The lid has no period: it keeps the slice's own.
+    assert commands[SET_PERIODS] == struct.pack("<HH", 2000, 1000)
+    assert commands[SET_PID] == bytes((23, 1, 0, 10, 5, 2))
+
+
+def test_gains_on_one_output_are_never_filled_in():
+    """Both outputs' gains go in one command and cannot be read back: with
+    only one output's gains configured, none are sent, rather than zeros
+    that would freeze the other output's PID integral."""
+    rlht = FakeRlht()
+    tuned = ChannelConfig(
+        "jacket", "Jacket", output=1, tc=2, kp=2.3, ki=0.1, kd=0.0, period_ms=2000
+    )
+    started(rlht, device(tuned))
+    assert SET_PID not in ops(rlht)
+    # Output 2 has no channel: it keeps its thermocouple and period.
+    commands = dict(rlht.commands)
     assert commands[SET_TC] == bytes((2, 2))
     assert commands[SET_PERIODS] == struct.pack("<HH", 2000, 1000)
-    assert commands[SET_PID] == bytes((23, 1, 0, 0, 0, 0))
 
 
 def test_a_control_the_slice_lacks_is_not_sent():
     rlht = FakeRlht(caps=0x40 | 0x02 | 0x20)  # watchdog, setpoints, open duty only
-    tuned = ChannelConfig("jacket", "Jacket", output=1, tc=1, kp=1.0, ki=1.0, kd=1.0, period_ms=500)
-    started(rlht, device(tuned))
+    jacket = ChannelConfig(
+        "jacket", "Jacket", output=1, tc=1, kp=1.0, ki=1.0, kd=1.0, period_ms=500
+    )
+    lid = ChannelConfig("lid", "Lid", output=2, tc=2, kp=1.0, ki=1.0, kd=1.0, period_ms=500)
+    started(rlht, device(jacket, lid))
     assert ops(rlht) == [SET_SETPOINTS, SET_OPEN_DUTY, SET_WATCHDOG]
 
 
@@ -184,6 +203,16 @@ def test_the_second_stop_op_is_sent_even_when_the_first_fails():
     rlht.commands.clear()
     rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EREMOTEIO, "Remote I/O error")
     with pytest.raises(OSError):
+        s.send_safe()
+    assert ops(rlht) == [SET_OPEN_DUTY]
+
+
+def test_the_second_stop_op_is_sent_even_when_the_first_is_interrupted():
+    rlht = FakeRlht()
+    s, _ = started(rlht)
+    rlht.commands.clear()
+    rlht.fail_opcodes[SET_SETPOINTS] = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
         s.send_safe()
     assert ops(rlht) == [SET_OPEN_DUTY]
 
@@ -256,7 +285,10 @@ def test_the_poll_is_the_keep_alive_every_slice_poll_s():
     reads = []
     c = Controller(EzoReader([]), [s], polled=[s], ezo_period_s=2.0, clock=clock, sleep=clock.sleep)
     c.subscribe(lambda r: reads.append(clock.now))
+    before = rlht.state_replies
     tick(c, clock, 5.0)
+    # The firmware feeds its watchdog when it builds a reply: count those.
+    assert rlht.state_replies - before == 5
     assert len(reads) == 5
     assert all(abs((b - a) - 1.0) < 1e-9 for a, b in zip(reads, reads[1:], strict=False))
 
@@ -334,3 +366,38 @@ def test_the_read_waits_for_the_reply_to_be_built():
     assert s.advance(t) == []  # stages GET_STATE
     assert s.advance(t + 0.005) == []  # too soon to read
     assert len(s.advance(t + 0.01)) == 1
+
+
+def test_a_device_that_did_not_answer_at_start_up_is_asked_again():
+    rlht = FakeRlht()
+    rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")]
+    s, _ = started(rlht)
+    assert s.started and s.protected
+
+
+def test_a_slice_that_identified_but_failed_start_up_still_gets_stop_all():
+    rlht = FakeRlht(arms=False)
+    clock = FakeClock()
+    with opened_slices(
+        [device()],
+        watchdog_timeout_ms=5000,
+        poll_s=1.0,
+        open_bus=lambda path: FakeI2cBus({0x0A: rlht}),
+        clock=clock,
+        sleep=clock.sleep,
+    ) as (slices, reports):
+        [s] = slices
+        assert s.identified and not s.started
+        assert any(isinstance(r, Result) and "watchdog did not arm" in r.detail for r in reports)
+        rlht.commands.clear()
+        s.send_safe()
+        assert ops(rlht) == [SET_SETPOINTS, SET_OPEN_DUTY]
+
+
+def test_a_negative_temperature_reads_as_negative():
+    rlht = FakeRlht()
+    rlht.temperatures = [-123, -32768]
+    s, clock = started(rlht)
+    s.advance(clock.now)
+    [result] = s.advance(clock.now + 0.1)
+    assert {v.field: v.value for v in result.values}["temperature"] == -12.3

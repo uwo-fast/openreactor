@@ -36,8 +36,13 @@ WATCHDOG_MAX_MS = 65535  # a u16 on the wire
 # RLHT gains go to the slice as one byte each, ten times the gain.
 GAINS = ("kp", "ki", "kd")
 GAIN_MAX = 25.5
-# An RLHT output's time-proportioning period, a u16 on the wire.
-PERIOD_MAX_MS = 65535
+# An RLHT output's time-proportioning period: the firmware clamps anything
+# else into this range without saying so.
+PERIOD_MIN_MS = 100
+PERIOD_MAX_MS = 10000
+# A slice poll takes two controller ticks (SET_REPLY, then the read), so a
+# shorter poll period would not poll any faster.
+SLICE_POLL_MIN_S = 0.2
 
 # The key that picks the hardware output for each slice channel.
 OUTPUT_KEY = {"rlht": "output", "dcmt": "motor"}
@@ -270,6 +275,12 @@ class _Parser:
         slice_poll_s = default.slice_poll_s
         if "slice_poll_s" in t:
             value = self.positive(t["slice_poll_s"], "controller.slice_poll_s")
+            if value is not None and value < SLICE_POLL_MIN_S:
+                self.error(
+                    "controller.slice_poll_s",
+                    f"must be at least {SLICE_POLL_MIN_S:g} s: a poll takes two 0.1 s ticks",
+                )
+                value = None
             if value is None:
                 self.invalid_timing.add("slice_poll_s")
             else:
@@ -374,6 +385,7 @@ class _Parser:
         )
         result: list[ChannelConfig] = []
         used: dict[int, str] = {}
+        tuned: list[str] = []
         for ch_name, raw_ch in t.items():
             cpath = f"{path}.{ch_name}"
             ch = self.table(raw_ch, cpath)
@@ -399,9 +411,15 @@ class _Parser:
             period_ms = None
             if kind == "rlht" and "period_ms" in ch:
                 period_ms = self.integer(ch["period_ms"], f"{cpath}.period_ms")
-                if period_ms is not None and not 1 <= period_ms <= PERIOD_MAX_MS:
-                    self.error(f"{cpath}.period_ms", f"must be between 1 and {PERIOD_MAX_MS}")
+                if period_ms is not None and not PERIOD_MIN_MS <= period_ms <= PERIOD_MAX_MS:
+                    self.error(
+                        f"{cpath}.period_ms",
+                        f"must be between {PERIOD_MIN_MS} and {PERIOD_MAX_MS}, the range the "
+                        "slice uses",
+                    )
                     period_ms = None
+            if gains is not None:
+                tuned.append(ch_name)
             if name_ok:
                 kp, ki, kd = gains or (None, None, None)
                 result.append(
@@ -416,6 +434,14 @@ class _Parser:
                         period_ms=period_ms,
                     )
                 )
+        if kind == "rlht" and tuned and (len(tuned) != len(t) or set(used) != {1, 2}):
+            # The slice takes both outputs' gains in one command, and they
+            # cannot be read back: gains go only when the config gives all six.
+            self.error(
+                path,
+                "gains (kp, ki, kd) must be set on a channel for each of the slice's two "
+                "outputs, or on none: the slice sets both outputs' gains at once",
+            )
         return tuple(result)
 
     def gains(self, ch: dict[str, Any], path: str) -> tuple[float, float, float] | None:
@@ -441,6 +467,16 @@ class _Parser:
                 return None
             if abs(value * 10 - round(value * 10)) > 1e-9:
                 self.error(f"{path}.{g}", "must be a multiple of 0.1, as the slice stores it")
+                return None
+            if g == "ki" and value == 0:
+                # The RLHT firmware's PID freezes its integral when ki is 0
+                # and does not clear it on the safe state, so a heater could
+                # stay at its last duty.
+                self.error(
+                    f"{path}.ki",
+                    "must be above 0: with ki = 0 the slice's PID keeps its integral, "
+                    "and a heater can stay on after its setpoint goes to 0",
+                )
                 return None
             values.append(float(value))
         return values[0], values[1], values[2]
