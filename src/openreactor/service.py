@@ -38,7 +38,14 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
-from openreactor.rlht import RlhtSlice, SendFailed, SliceBusy, SliceError, opened_slices
+from openreactor.rlht import (
+    RlhtSlice,
+    SendFailed,
+    SliceBusy,
+    SliceError,
+    SliceStatus,
+    opened_slices,
+)
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -184,6 +191,30 @@ class Service:
                 status = "ok"
             states.append(DeviceState(d.name, d.kind, status))
         return states
+
+    def slices(self) -> list[SliceStatus]:
+        """Each configured RLHT as the controller last saw it, read on the
+        controller's thread so each one is consistent."""
+
+        def why(name: str) -> str | None:
+            p = self._problems.get(name)
+            if p is None:
+                return None
+            return f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+
+        def snapshot() -> list[SliceStatus]:
+            out: list[SliceStatus] = []
+            for d in self.config.devices:
+                if d.kind != "rlht":
+                    continue
+                s = self._slices.get(d.name)
+                if s is not None:
+                    out.append(s.status(why(d.name) if not s.started else None))
+                else:
+                    out.append(SliceStatus(d.name, d.address, why(d.name) or "not in use"))
+            return out
+
+        return _wait(self.controller.call(snapshot))
 
     def channels(self) -> list[ChannelState]:
         with self._lock:

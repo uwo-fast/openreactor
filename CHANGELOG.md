@@ -63,6 +63,10 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   recorded as an event. A slice found running other setpoints than wanted,
   with no trip or reboot behind it, is sent its safe state.
 - `openreactor serve` prints each event as it happens, as `run` does.
+- `openreactor status` shows each RLHT slice's firmware, state, watchdog,
+  e-stop, mode and outputs: from the server while `serve` runs, or read
+  from the bus, sending nothing, when nothing does. `/api/v1/status` has
+  the same detail under `slices`.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.

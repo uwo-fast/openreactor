@@ -46,6 +46,7 @@ from openreactor.auth import verify_password
 from openreactor.config import Config
 from openreactor.controller import ControllerClosed
 from openreactor.ezo import EzoDeviceError, EzoStatusError
+from openreactor.rlht import SliceStatus
 from openreactor.service import (
     Conflict,
     DeviceFailed,
@@ -348,6 +349,8 @@ class StatusOut(BaseModel):
     # current run until it is stopped.
     recording_failed: str | None
     devices: list[DeviceOut]
+    # Each RLHT slice in detail: firmware, mode, e-stop, watchdog, outputs.
+    slices: list[SliceStatus]
 
 
 class ChannelOut(BaseModel):
@@ -390,6 +393,7 @@ def get_status(svc: Svc) -> StatusOut:
         run=svc.current_run(),
         recording_failed=svc.recording_failed(),
         devices=devices,
+        slices=svc.slices(),
     )
 
 

@@ -158,7 +158,8 @@ curl -s -X PUT localhost:8080/api/v1/channels/jacket/setpoint \
    again, a `slice-trip` event with result `re-asserted`.
 4. **Re-assert after a power-cycle:** power-cycle the slice while openreactor
    runs with a setpoint set. A `slice-reboot` event with result
-   `re-asserted`, and the channel's setpoint reading shows it again. This is
+   `re-asserted`, and the channel's setpoint reading shows it again;
+   `openreactor status` shows closed loop and the configured thermocouples. This is
    for a default build,
    which boots disarmed. A build with `RLHT_WATCHDOG_BOOT_MS` gives a
    `slice-trip` instead, and only if it had tripped before (#53).

@@ -69,6 +69,7 @@ openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
 openreactor serve                    # serve the HTTP API until Ctrl-C
+openreactor status                   # show each RLHT slice's state
 openreactor hash-password            # make a server.password_hash
 openreactor profile validate --dry-run FILE  # check a run profile, print its timeline
 ```
@@ -110,6 +111,13 @@ not finish start-up (503). A send that fails answers 502, since the slice may
 have taken it. Each one sent, or tried, is an event in the run. It stays the
 desired setpoint, sent again after a trip or a reboot, until it is set again
 or stop-all or an e-stop zeroes it. It is not restored after a restart.
+
+`openreactor status` shows each RLHT slice: its firmware, state, watchdog,
+e-stop, mode, and each output's temperature, setpoint, duty and
+thermocouple. While `serve` runs, it asks the server, at the config's
+`[server]` address or `--url`, with the password from `OPENREACTOR_PASSWORD`
+or a prompt. With nothing running, it reads the slices from the bus and
+sends them nothing. `/api/v1/status` has the same detail under `slices`.
 
 When a poll finds the slice running setpoints other than those wanted, the
 watchdog is checked on the next tick: a trip or a reboot is re-asserted as

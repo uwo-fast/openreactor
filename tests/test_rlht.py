@@ -983,3 +983,17 @@ def test_with_checks_failing_a_setpoint_is_not_told_a_check_is_pending():
     # The send is what fails, and that is what the operator is told.
     with pytest.raises(SendFailed):
         s.set_setpoint(1, 400)
+
+
+def test_a_slice_that_did_not_start_says_so_in_its_status():
+    clock = FakeClock()
+    never_started = RlhtSlice(
+        device(),
+        CrumbsPort(FakeI2cBus({0x0A: FakeRlht()}), 0x0A, sleep=clock.sleep),
+        watchdog_timeout_ms=5000,
+        poll_s=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert never_started.status().state == "did not finish start-up"
+    assert never_started.status("error: no answer").state == "error: no answer"
