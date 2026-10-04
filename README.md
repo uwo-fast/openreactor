@@ -67,6 +67,8 @@ openreactor export 3                 # write run 3 as run-3.zip
 openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
+openreactor serve                    # serve the HTTP API until Ctrl-C
+openreactor hash-password            # make a server.password_hash
 ```
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
@@ -74,6 +76,25 @@ A run records every reading and event (stop-all, failed reads) in SQLite, at
 export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's
 config. If the database fails mid-run (a full disk, say), recording stops and
 the run is marked interrupted; control and stop-all carry on.
+
+`openreactor serve` runs the controller with the HTTP API at `/api/v1`:
+status, live channels, setpoints, runs and their export, stop-all and EZO
+calibration. It holds the same lock as the other device commands, and SIGTERM
+sends stop-all and ends a recording run before it exits.
+
+- With no `server.password_hash` it binds only to a loopback address, and
+  answers only requests addressed to `localhost`, `127.0.0.1` or `[::1]`.
+- To serve the lab network, set `server.host` and a `server.password_hash`
+  from `openreactor hash-password`. A browser signs in with
+  `POST /login` and gets a session cookie, which lasts 12 hours or until the
+  server restarts. A script sends `Authorization: Bearer <password>`.
+- A request that changes something is refused if its `Origin` names another
+  site; a signed-in browser request must carry one.
+- The OpenAPI description is at `/api/v1/openapi.json`, behind the same
+  sign-in.
+
+Plain HTTP carries the password and the session cookie in the clear, so use it
+on a lab network you trust, or put a TLS proxy in front.
 
 Calibration points by family:
 

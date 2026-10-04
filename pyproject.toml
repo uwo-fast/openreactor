@@ -14,7 +14,16 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
 ]
-dependencies = ["ezo-driver>=0.5.1"]
+dependencies = [
+    "ezo-driver>=0.5.1",
+    # Capped at the next minor (FastAPI) or major (Starlette, pydantic):
+    # their breaking changes land there.
+    "fastapi>=0.142,<0.143",
+    "starlette>=1.7,<2",
+    "pydantic>=2.13,<3",
+    "uvicorn>=0.54,<0.55",
+    "itsdangerous>=2.2,<3",
+]
 
 [project.scripts]
 openreactor = "openreactor.cli:main"

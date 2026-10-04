@@ -4,11 +4,12 @@
 #   openreactor check-config openreactor.toml
 
 [server]
-# Listen on this machine only. Anything other than a loopback address will
-# need a password_hash.
+# Where openreactor serve listens: this machine only. Any other address, such
+# as "0.0.0.0" for the lab network, needs a password_hash, made with
+#   openreactor hash-password
 host = "127.0.0.1"
 port = 8080
-# password_hash = "scrypt$..."
+# password_hash = "scrypt$32768$8$1$..."
 
 [controller]
 # How often each slice is polled. The poll is also the slice's watchdog

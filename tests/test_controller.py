@@ -442,3 +442,25 @@ def test_a_cancelled_stop_all_still_makes_safe_and_reports():
     assert log == ["safe heater", "safe heater"]
     assert [e.source for e in seen if isinstance(e, Event)] == ["user", "system"]
     assert [e.result for e in events] == ["ok"]
+
+
+def test_call_runs_work_on_the_next_tick_and_returns_its_value():
+    c, clock = setup()
+    seen: list[str] = []
+    ok = c.call(lambda: seen.append("ran") or 42)
+    bad = c.call(lambda: 1 / 0)
+    assert not ok.done()
+    tick(c, clock)
+    assert ok.result() == 42 and seen == ["ran"]
+    assert isinstance(bad.exception(), ZeroDivisionError)
+
+
+def test_unsubscribe_stops_delivery():
+    seen: list[Result | Event] = []
+    c, clock = setup(actuators=[FakeActuator("heater")])
+    c.subscribe(seen.append)
+    tick(c, clock)
+    c.unsubscribe(seen.append)
+    c.stop_all()
+    tick(c, clock)
+    assert seen == []
