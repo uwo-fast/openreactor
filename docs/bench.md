@@ -27,7 +27,7 @@ On 64-bit Raspberry Pi OS (Bookworm or Trixie):
    ```sh
    sudo raspi-config nonint do_i2c 0
    sudo usermod -aG i2c "$USER"
-   sudo apt install -y git i2c-tools build-essential python3-dev
+   sudo apt install -y git i2c-tools
    ```
 
 2. Put every EZO circuit in I2C mode. They ship in UART mode. To switch one by
@@ -46,9 +46,8 @@ On 64-bit Raspberry Pi OS (Bookworm or Trixie):
 
    `i2cdetect -y 1` should then list each one.
 
-3. Install openreactor from a checkout. Until ezo-driver is on PyPI, `uv sync`
-   builds it from source, which is why `build-essential` and `python3-dev`
-   are needed above:
+3. Install openreactor from a checkout. ezo-driver comes as a wheel for the
+   Pi's aarch64, so nothing is compiled:
 
    ```sh
    curl -LsSf https://astral.sh/uv/install.sh | sh

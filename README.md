@@ -30,9 +30,10 @@ and usage instructions.
 
 ## Development
 
-Needs [uv](https://docs.astral.sh/uv/), [just](https://just.systems/) and a C
-compiler: [ezo-driver](https://github.com/feastorg/ezo-driver) is installed from
-git, and built from source, until it is published to PyPI.
+Needs [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/).
+[ezo-driver](https://github.com/feastorg/ezo-driver) installs as a wheel on
+x86_64 and aarch64 Linux; elsewhere it builds from source and needs a C
+compiler.
 
 ```sh
 git clone https://github.com/uwo-fast/openreactor.git
