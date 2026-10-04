@@ -184,42 +184,6 @@ def _watchdog(w: BreadWatchdogResult) -> WatchdogStatus:
     return WatchdogStatus(bool(w.armed), w.timeout_ms, bool(w.tripped), w.trip_count)
 
 
-def probe(device: DeviceConfig, port: SlicePort) -> SliceStatus:
-    """Read a slice's version, caps, state and watchdog without sending it
-    any command, for when no controller is running. Reading GET_STATE
-    feeds an armed watchdog, as any reply does."""
-
-    def failed(why: str) -> SliceStatus:
-        return SliceStatus(device.name, device.address, why)
-
-    try:
-        version = bread_parse_version(port.query(BREAD_OP_GET_VERSION))
-        text = (
-            f"RLHT {version.mod_major}.{version.mod_minor}.{version.mod_patch}, "
-            f"CRUMBS {_crumbs_version(version.crumbs_ver)}"
-        )
-        caps = bread_caps_parse_payload(port.query(BREAD_OP_GET_CAPS))
-        state = rlht_parse_state_payload(port.query(RLHT_OP_GET_STATE))
-        watchdog = (
-            _watchdog(bread_watchdog_parse_payload(port.query(BREAD_OP_GET_WATCHDOG)))
-            if caps.flags & RLHT_CAP_CMD_WATCHDOG
-            else None
-        )
-    except (CrumbsError, OSError, ValueError) as e:
-        return failed(f"error: {_describe(e)}")
-    return SliceStatus(
-        device.name,
-        device.address,
-        "e-stop held on the slice" if state.flags & RLHT_FLAG_ESTOP else "ok",
-        version=text,
-        caps=caps.flags,
-        mode=_mode(state),
-        estop=bool(state.flags & RLHT_FLAG_ESTOP),
-        outputs=_outputs(device, state),
-        watchdog=watchdog,
-    )
-
-
 class SliceBusy(Exception):
     """The slice cannot take a setpoint as it is: its e-stop is held, or it
     is read-only."""

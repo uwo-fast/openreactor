@@ -114,10 +114,12 @@ or stop-all or an e-stop zeroes it. It is not restored after a restart.
 
 `openreactor status` shows each RLHT slice: its firmware, state, watchdog,
 e-stop, mode, and each output's temperature, setpoint, duty and
-thermocouple. While `serve` runs, it asks the server, at the config's
-`[server]` address or `--url`, with the password from `OPENREACTOR_PASSWORD`
-or a prompt. With nothing running, it reads the slices from the bus and
-sends them nothing. `/api/v1/status` has the same detail under `slices`.
+thermocouple. It asks the running server, at the config's `[server]`
+address or `--url`, with the password from `OPENREACTOR_PASSWORD`, or a
+prompt when the server asks for one. With no server it reads nothing: every
+reply a slice builds feeds its watchdog, so reading a slice after
+openreactor stopped would keep an armed one heating. `/api/v1/status` has
+the same detail under `slices`.
 
 When a poll finds the slice running setpoints other than those wanted, the
 watchdog is checked on the next tick: a trip or a reboot is re-asserted as

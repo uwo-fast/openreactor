@@ -52,6 +52,9 @@ _T = TypeVar("_T")
 
 # How long a request waits for the controller to finish an action.
 ACTION_TIMEOUT_S = 30.0
+# How long status waits for the slices' state; well inside status's own
+# timeout, so a busy controller shows as such instead of no answer.
+SLICE_STATUS_TIMEOUT_S = 2.0
 
 
 def _wait(future: Future[_T]) -> _T:
@@ -214,7 +217,17 @@ class Service:
                     out.append(SliceStatus(d.name, d.address, why(d.name) or "not in use"))
             return out
 
-        return _wait(self.controller.call(snapshot))
+        future = self.controller.call(snapshot)
+        try:
+            return future.result(timeout=SLICE_STATUS_TIMEOUT_S)
+        except TimeoutError:
+            # The rest of status needs no controller; don't fail it whole.
+            future.cancel()
+            return [
+                SliceStatus(d.name, d.address, "unknown: the controller did not answer in time")
+                for d in self.config.devices
+                if d.kind == "rlht"
+            ]
 
     def channels(self) -> list[ChannelState]:
         with self._lock:

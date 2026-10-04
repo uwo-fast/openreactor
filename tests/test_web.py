@@ -952,3 +952,17 @@ def test_status_shows_a_slice_that_never_answered_or_did_not_start(tmp_path: Pat
     with TestClient(bench.app, base_url=LOCAL) as client:
         s = slice_status(client)
     assert "watchdog did not arm" in s["state"] and s["version"] == "RLHT 1.0.0, CRUMBS 0.15.0"
+
+
+def test_status_survives_a_busy_controller(open_bench, monkeypatch: pytest.MonkeyPatch):
+    from openreactor import service as service_module
+
+    bench, client = open_bench
+    monkeypatch.setattr(service_module, "SLICE_STATUS_TIMEOUT_S", 0.2)
+    svc = bench.app.state.service
+    svc.controller.call(lambda: time.sleep(1.0))  # the controller is busy
+    r = client.get("/api/v1/status")
+    assert r.status_code == 200
+    [s] = r.json()["slices"]
+    assert s["state"] == "unknown: the controller did not answer in time"
+    assert {d["name"] for d in r.json()["devices"]} == {"heater", "air"}

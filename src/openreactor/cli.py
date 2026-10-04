@@ -12,7 +12,6 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
@@ -41,7 +40,7 @@ from openreactor.ezo import (
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
 from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
-from openreactor.rlht import CrumbsPort, SliceStatus, opened_slices, probe
+from openreactor.rlht import opened_slices
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
 if TYPE_CHECKING:
@@ -634,86 +633,83 @@ def _status_url(config: Config) -> str:
 
 
 def _status(args: argparse.Namespace) -> int:
-    """Each RLHT slice's state: from the server when one holds the bus,
-    otherwise read from the bus without sending the slices anything."""
+    """Each RLHT slice's state, from the running server. With no server it
+    reads nothing from the bus: every reply a slice builds feeds its
+    watchdog, so reading a slice after openreactor stopped would keep an
+    armed slice heating for as long as status is run."""
+    import urllib.error
+
     config = _load(args.config)
     if config is None:
         return 1
-    rlht = [d for d in config.devices if d.kind == "rlht"]
-    try:
-        with ControllerLock(lock_path):
-            if not rlht:
-                print(f"error: {args.config} lists no RLHT slices", file=sys.stderr)
-                return 1
-            slices = [asdict(s) for s in _probe(rlht)]
-            _print_status(slices, "read from the bus: no controller is running")
-            return 0
-    except LockHeld as e:
-        return _status_from_server(args, config, e)
-    except OSError as e:
-        where = f"{e.filename}: " if e.filename else ""
-        print(f"error: {where}{e.strerror or e}", file=sys.stderr)
-        return 1
-
-
-def _probe(devices: Sequence[DeviceConfig]) -> list[SliceStatus]:
-    buses: dict[str, Bus] = {}
-    out: list[SliceStatus] = []
-    try:
-        for d in devices:
-            try:
-                if d.bus not in buses:
-                    buses[d.bus] = open_bus(d.bus)
-            except OSError as e:
-                out.append(SliceStatus(d.name, d.address, f"error: {e.strerror or e}"))
-                continue
-            out.append(probe(d, CrumbsPort(buses[d.bus], d.address, sleep=sleep)))
-    finally:
-        for bus in buses.values():
-            close = getattr(bus, "close", None)
-            if close is not None:
-                close()
-    return out
-
-
-def _status_from_server(args: argparse.Namespace, config: Config, held: LockHeld) -> int:
-    import urllib.error
-
     url = args.url or _status_url(config)
-    password = None
-    if config.server.password_hash is not None:
-        password = os.environ.get("OPENREACTOR_PASSWORD")
-        if password is None:
-            if not sys.stdin.isatty():
-                print(
-                    "error: the server needs a password: set OPENREACTOR_PASSWORD",
-                    file=sys.stderr,
-                )
-                return 1
-            password = getpass.getpass("Password: ")
+    password = os.environ.get("OPENREACTOR_PASSWORD")
     try:
-        status = fetch_status(url, password)
+        try:
+            status = fetch_status(url, password)
+        except urllib.error.HTTPError as e:
+            if e.code != 401 or password is not None:
+                raise
+            if not sys.stdin.isatty():
+                print(f"error: {url} needs a password: set OPENREACTOR_PASSWORD", file=sys.stderr)
+                return 1
+            status = fetch_status(url, getpass.getpass("Password: "))
     except urllib.error.HTTPError as e:
         why = "the password was refused" if e.code == 401 else f"HTTP {e.code}"
         print(f"error: {url}: {why}", file=sys.stderr)
         return 1
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError) as e:
         reason = getattr(e, "reason", e)
-        print(
-            f"error: {held.holder} holds the bus, and no server answered at {url} ({reason}). "
-            "A run prints its slice events itself; for a server on another address, "
-            "pass --url.",
-            file=sys.stderr,
-        )
+        if isinstance(reason, TimeoutError):
+            print(
+                f"error: the server at {url} did not answer within {STATUS_TIMEOUT_S:g} s",
+                file=sys.stderr,
+            )
+        else:
+            print(f"error: no server answered at {url} ({reason}). {_holder()}", file=sys.stderr)
         return 1
-    _print_status(status.get("slices", []), f"from the server at {url}")
-    others = [d for d in status.get("devices", []) if d.get("kind") != "rlht"]
-    for d in others:
-        print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
+    except ValueError:
+        print(f"error: {url} did not answer with JSON", file=sys.stderr)
+        return 1
+    try:
+        _print_server_status(status, url)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        print(f"error: {url} did not answer with an openreactor status", file=sys.stderr)
+        return 1
     return 0
 
 
-def _print_status(slices: Sequence[dict[str, Any]], source: str) -> None:
+def _holder() -> str:
+    """Who holds the bus, to say why no server answered."""
+    try:
+        with ControllerLock(lock_path):
+            return (
+                "Nothing holds the bus either: start openreactor serve. status reads "
+                "only from a server, since reading a slice feeds its watchdog."
+            )
+    except LockHeld as e:
+        return f"{e.holder} holds the bus; for a server on another address, pass --url."
+    except OSError:
+        return "For a server on another address, pass --url."
+
+
+def _print_server_status(status: dict[str, Any], url: str) -> None:
+    slices = status.get("slices")
+    devices = status.get("devices", [])
+    if slices is None:
+        print("(the server predates slice detail; its device status follows)")
+        for d in devices:
+            print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
+        print(f"(from the server at {url})")
+        return
+    _print_status(slices)
+    for d in devices:
+        if d["kind"] != "rlht":
+            print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
+    print(f"(from the server at {url})")
+
+
+def _print_status(slices: Sequence[dict[str, Any]]) -> None:
     for s in slices:
         version = f"  {s['version']}" if s.get("version") else ""
         print(f"{s['name']}  0x{s['address']:02X}{version}")
@@ -747,7 +743,6 @@ def _print_status(slices: Sequence[dict[str, Any]], source: str) -> None:
                 f"  {label:<9} {temperature}  setpoint {setpoint:>6}  duty {duty:3d} %"
                 f"  tc {o['tc']}{wanted}"
             )
-    print(f"({source})")
 
 
 def _serve(args: argparse.Namespace) -> int:
