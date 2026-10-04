@@ -53,3 +53,43 @@ def test_a_lock_that_cannot_be_opened_names_the_file(tmp_path: Path):
     with pytest.raises(OSError) as e:
         ControllerLock(path).acquire()
     assert e.value.filename == str(path)
+
+
+def test_an_existing_lock_file_is_opened_without_o_creat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # fs.protected_regular refuses O_CREAT on another user's file in a
+    # sticky directory like /run/lock, even for root.
+    path = tmp_path / "openreactor.lock"
+    path.write_text("")
+    flags: list[int] = []
+    real_open = os.open
+
+    def recording_open(p, f, *mode):
+        flags.append(f)
+        return real_open(p, f, *mode)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    with ControllerLock(path):
+        pass
+    assert flags and not flags[0] & os.O_CREAT
+
+
+def test_a_lock_file_created_by_another_process_meanwhile_is_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "openreactor.lock"
+    real_open = os.open
+    calls = {"n": 0}
+
+    def racing_open(p, f, *mode):
+        calls["n"] += 1
+        if calls["n"] == 2:  # between our two attempts, someone creates it
+            path.write_text("")
+            raise FileExistsError(p)
+        return real_open(p, f, *mode)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with ControllerLock(path):
+        pass
+    assert calls["n"] == 3

@@ -42,7 +42,7 @@ class ControllerLock:
 
     def acquire(self) -> None:
         try:
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o666)
+            fd = self._open()
         except PermissionError as e:
             raise PermissionError(
                 e.errno, f"cannot open the controller lock: {e.strerror}", str(self.path)
@@ -61,6 +61,21 @@ class ControllerLock:
         holder = f"{getpass.getuser()}, pid {os.getpid()}: {' '.join(sys.argv)}\n"
         os.pwrite(fd, holder.encode(), 0)
         self._fd = fd
+
+    def _open(self) -> int:
+        # Open an existing file without O_CREAT: with fs.protected_regular
+        # (the Debian default), O_CREAT on another user's file in a sticky
+        # directory such as /run/lock is refused, even for root. Create it
+        # only when it does not exist yet.
+        while True:
+            try:
+                return os.open(self.path, os.O_RDWR)
+            except FileNotFoundError:
+                pass
+            try:
+                return os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o666)
+            except FileExistsError:
+                continue  # another process created it first: open that one
 
     def release(self) -> None:
         if self._fd is not None:

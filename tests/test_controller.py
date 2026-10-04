@@ -369,3 +369,60 @@ def test_close_gives_up_on_a_hung_actuator_without_hanging_the_process():
         assert thread.is_alive() and thread.daemon
     finally:
         release.set()
+
+
+def test_a_job_cancelled_before_it_starts_never_touches_its_circuit():
+    port = FakePort("ph")
+    log: list[str] = []
+    c, clock = setup(("ph", "ezo-ph", port), actuators=[FakeActuator("heater", log)])
+    job = c.run_job("ph", calibrate_steps(FAMILIES["ezo-ph"], port, "mid", 7.0))
+    cycle = c.read_cycle()
+    assert job.cancel() and cycle.cancel()
+
+    tick(c, clock, 15)
+
+    assert port.sent == []
+    assert c.close()[0].result == "ok"
+    assert log == ["safe heater"]
+
+
+def test_close_sends_stop_all_with_cancelled_work_outstanding():
+    port = FakePort("ph")
+    log: list[str] = []
+    c, clock = setup(("ph", "ezo-ph", port), actuators=[FakeActuator("heater", log)])
+    started = c.run_job("ph", calibrate_steps(FAMILIES["ezo-ph"], port, "mid", 7.0))
+    tick(c, clock)  # the job is running and can no longer be cancelled
+    queued = c.run_job("ph", calibrate_steps(FAMILIES["ezo-ph"], port, "low", 4.0))
+    assert not started.cancel()
+    assert queued.cancel()
+
+    events = c.close()
+
+    assert [e.result for e in events] == ["ok"] and log == ["safe heater"]
+    assert isinstance(started.exception(), ControllerClosed)
+    assert queued.cancelled()
+
+
+def test_a_threaded_close_sends_stop_all_after_a_caller_cancels():
+    log: list[str] = []
+    c = Controller(EzoReader([]), [FakeActuator("heater", log)], ezo_period_s=2.0)
+    c.start()
+    try:
+        never = c.run_job("ph", calibration_status_steps(FakePort("ph")))
+        never.cancel()
+    finally:
+        events = c.close(timeout_s=2)
+    assert [e.result for e in events] == ["ok"]
+    assert log == ["safe heater"]
+
+
+def test_overlapping_read_cycles_each_get_one_result_per_circuit():
+    port = FakePort("ph", PH)
+    c, clock = setup(("ph", "ezo-ph", port))
+    first = c.read_cycle()
+    tick(c, clock, 2)
+    second = c.read_cycle()  # joins the read already in flight
+    tick(c, clock, 15)
+    assert [r.channel for r in first.result()] == ["ph"]
+    assert [r.channel for r in second.result()] == ["ph"]
+    assert port.sent.count("read") == 1

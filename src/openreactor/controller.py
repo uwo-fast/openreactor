@@ -204,6 +204,11 @@ class Controller:
             if job.resume_at is None:
                 if job.channel in busy or job.channel in pending:
                     continue
+                # Once running, the caller can no longer cancel it; one it
+                # cancelled before it started never touches the circuit.
+                if not job.future.set_running_or_notify_cancel():
+                    self._jobs.remove(job)
+                    continue
                 busy.add(job.channel)
             elif now < job.resume_at:
                 continue
@@ -221,9 +226,12 @@ class Controller:
 
     def _advance_reads(self, now: float) -> None:
         busy = self._busy()
-        for request in self._cycles:
+        for request in list(self._cycles):
             if not request.started:
                 request.started = True
+                if not request.future.set_running_or_notify_cancel():
+                    self._cycles.remove(request)
+                    continue
                 request.results += self.reader.begin(request.names, skip=busy)
                 # Wait for every requested circuit now in flight, whether this
                 # request started its read or joined one already pending.
@@ -309,18 +317,23 @@ class Controller:
         self._thread.start()
 
     def _shutdown(self) -> list[Event]:
-        """Cancel everything outstanding and send stop-all, nothing else: a
+        """Send stop-all and cancel everything outstanding, nothing else: a
         half-finished calibration must not send its next command."""
         self._auto_read = False
-        self._drain_commands()  # an already queued stop-all still runs
-        closed = ControllerClosed("the controller closed")
-        for job in self._jobs:
-            job.future.set_exception(closed)
-        for request in self._cycles:
-            request.future.set_exception(closed)
-        self._jobs.clear()
-        self._cycles.clear()
-        return self._stop_all("system")
+        jobs, cycles = self._jobs, self._cycles
+        self._jobs, self._cycles = [], []
+        try:
+            self._drain_commands()  # an already queued stop-all still runs
+            return self._stop_all("system")
+        finally:
+            closed = ControllerClosed("the controller closed")
+            for future in [j.future for j in jobs + self._jobs] + [
+                c.future for c in cycles + self._cycles
+            ]:
+                if not future.done():
+                    future.set_exception(closed)
+            self._jobs.clear()
+            self._cycles.clear()
 
     def close(self, timeout_s: float = 5.0) -> list[Event]:
         """Send stop-all and stop ticking. Call before the bus is closed.
