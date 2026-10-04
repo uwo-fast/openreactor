@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -10,7 +11,7 @@ from types import FrameType
 
 from openreactor import __version__
 from openreactor.config import Config, ConfigError, DeviceConfig, load_config
-from openreactor.controller import Controller, Event
+from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
     FAMILIES,
     DriverPort,
@@ -25,7 +26,7 @@ from openreactor.ezo import (
     calibration_status_steps,
     clear_calibration_steps,
 )
-from openreactor.lock import ControllerLock, LockHeld, state_dir
+from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
 
 DEFAULT_CONFIG = "/etc/openreactor/openreactor.toml"
 
@@ -34,9 +35,19 @@ clock: Callable[[], float] = time.monotonic
 sleep: Callable[[float], None] = time.sleep
 
 
+# The machine-wide controller lock. Tests point it at a temporary file.
+lock_path = LOCK_PATH
+
+
 def open_port(device: DeviceConfig) -> EzoPort:
     """Open one EZO circuit. Tests replace this with a fake."""
     return DriverPort(device.kind, device.bus, device.address)
+
+
+def actuators(config: Config) -> list[Actuator]:
+    """The outputs stop-all makes safe. The slices add theirs in #24 and #25;
+    tests replace this with fakes."""
+    return []
 
 
 def _load(path: str) -> Config | None:
@@ -80,8 +91,9 @@ def _print(item: Result | Event) -> None:
         print(line, flush=True)
 
 
-class _Stop(Exception):
-    """SIGTERM, handled like Ctrl-C."""
+class _Stop(BaseException):
+    """SIGTERM, handled like Ctrl-C: nothing on the way catches it as an
+    ordinary error."""
 
 
 def _on_sigterm(signum: int, frame: FrameType | None) -> None:
@@ -95,7 +107,7 @@ def _controller(
     """Take the lock, open the circuits, check them, and yield a controller
     with the startup problems. On the way out, even on Ctrl-C or SIGTERM,
     stop-all is sent before the circuits are closed."""
-    with ControllerLock(state_dir(config.controller.state_dir)):
+    with ControllerLock(lock_path):
         channels: list[EzoChannel] = []
         problems: list[Result] = []
         try:
@@ -108,6 +120,7 @@ def _controller(
             problems += reader.prepare()
             controller = Controller(
                 reader,
+                actuators(config),
                 ezo_period_s=config.controller.ezo_period_s,
                 auto_read=auto_read,
                 clock=clock,
@@ -140,11 +153,18 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
                 file=sys.stderr,
             )
             return 1
+        except BrokenPipeError:
+            # The reader of our output went away (read --follow | head).
+            return 0
         except OSError as e:
-            print(f"error: {e.filename}: {e.strerror}", file=sys.stderr)
+            where = f"{e.filename}: " if e.filename else ""
+            print(f"error: {where}{e.strerror or e}", file=sys.stderr)
             return 1
         except (KeyboardInterrupt, _Stop):
-            return 0
+            if getattr(args, "follow", False):
+                return 0  # Ctrl-C is how --follow is meant to end
+            print("interrupted", file=sys.stderr)
+            return 130
         finally:
             signal.signal(signal.SIGTERM, previous)
 
@@ -164,8 +184,20 @@ def _read(args: argparse.Namespace, config: Config) -> int:
         for problem in problems:
             _print(problem)
         if args.follow:
-            controller.subscribe(_print)
-            controller.run(lambda: False)
+            closed = False
+
+            def show(item: Result | Event) -> None:
+                nonlocal closed
+                try:
+                    _print(item)
+                except BrokenPipeError:
+                    # The reader went away (read --follow | head): stop, and
+                    # send what is left, the stop-all report, nowhere.
+                    closed = True
+                    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+            controller.subscribe(show)
+            controller.run(lambda: closed)
             return 0
         results = controller.read_once()
         for result in results:

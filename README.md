@@ -51,10 +51,11 @@ with `pre-commit install`.
 
 The device commands read `/etc/openreactor/openreactor.toml` unless given
 `-c FILE`. They go through one controller that owns the bus, and only one can
-run at a time: each holds a lock file in the state directory
-(`controller.state_dir`, by default `~/.local/state/openreactor`), and a second
-command refuses with the holder's pid. Ctrl-C and SIGTERM send stop-all before
-the bus is closed.
+run at a time on a machine, whichever user runs it: each holds
+`/run/lock/openreactor.lock`, and a second command refuses, naming the
+holder's user and pid. Ctrl-C and SIGTERM send stop-all before the bus is
+closed; an interrupted `read` or `ezo cal` exits 130 and sends nothing more to
+the circuit.
 
 ```sh
 openreactor check-config FILE        # validate a config file

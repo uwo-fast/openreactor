@@ -1,44 +1,55 @@
+import getpass
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
-from openreactor.lock import LOCK_NAME, ControllerLock, LockHeld, state_dir
+from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
 
 
-def test_state_dir_defaults_to_xdg_state_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert state_dir(None) == tmp_path / "openreactor"
-    monkeypatch.delenv("XDG_STATE_HOME")
-    assert state_dir(None) == Path.home() / ".local" / "state" / "openreactor"
-    assert state_dir("/var/lib/openreactor") == Path("/var/lib/openreactor")
+def test_the_lock_is_machine_wide():
+    # Not under a home or state directory: a command run with sudo and one
+    # run by a lab user must find the same lock.
+    assert Path("/run/lock/openreactor.lock") == LOCK_PATH
 
 
-def test_lock_creates_the_directory_and_records_its_holder(tmp_path: Path):
-    directory = tmp_path / "state"
-    with ControllerLock(directory):
-        content = (directory / LOCK_NAME).read_text()
-        assert content.startswith(f"pid {os.getpid()}:")
+def test_lock_records_its_holder(tmp_path: Path):
+    path = tmp_path / "openreactor.lock"
+    with ControllerLock(path):
+        assert path.read_text().startswith(f"{getpass.getuser()}, pid {os.getpid()}:")
+
+
+def test_the_lock_file_is_open_to_every_user(tmp_path: Path):
+    path = tmp_path / "openreactor.lock"
+    old = os.umask(0o022)
+    try:
+        with ControllerLock(path):
+            pass
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o666
 
 
 def test_a_second_lock_is_refused_naming_the_holder(tmp_path: Path):
-    with ControllerLock(tmp_path), pytest.raises(LockHeld) as e:
-        ControllerLock(tmp_path).acquire()
-    assert e.value.path == tmp_path / LOCK_NAME
-    assert e.value.holder.startswith(f"pid {os.getpid()}:")
+    path = tmp_path / "openreactor.lock"
+    with ControllerLock(path), pytest.raises(LockHeld) as e:
+        ControllerLock(path).acquire()
+    assert e.value.path == path
+    assert e.value.holder.startswith(f"{getpass.getuser()}, pid {os.getpid()}:")
 
 
 def test_the_lock_is_free_again_after_release(tmp_path: Path):
-    with ControllerLock(tmp_path):
+    path = tmp_path / "openreactor.lock"
+    with ControllerLock(path):
         pass
-    with ControllerLock(tmp_path):
+    with ControllerLock(path):
         pass
-    assert (tmp_path / LOCK_NAME).read_text() == ""
+    assert path.read_text() == ""
 
 
-def test_an_unusable_state_directory_is_an_os_error(tmp_path: Path):
-    blocker = tmp_path / "file"
-    blocker.write_text("")
+def test_a_lock_that_cannot_be_opened_names_the_file(tmp_path: Path):
+    path = tmp_path / "missing" / "openreactor.lock"
     with pytest.raises(OSError) as e:
-        ControllerLock(blocker / "state").acquire()
-    assert e.value.filename == str(blocker / "state")
+        ControllerLock(path).acquire()
+    assert e.value.filename == str(path)

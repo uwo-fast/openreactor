@@ -21,10 +21,6 @@ ezo_period_s = 2.0
 # A slice stops its outputs when it has not heard from openreactor for this
 # long. Between 3 x slice_poll_s and 65535 ms.
 watchdog_timeout_ms = 5000
-# Where the controller keeps its lock file (and, later, the database). An
-# installed service uses /var/lib/openreactor; left unset, each user gets
-# ~/.local/state/openreactor.
-# state_dir = "/var/lib/openreactor"
 
 # Set each address to what your board answers on. The EZO addresses below are
 # the factory defaults. Addresses are 7-bit, 0x08 to 0x77, and a bus and

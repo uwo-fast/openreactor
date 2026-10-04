@@ -121,7 +121,7 @@ class FakePort:
 class FakeActuator:
     """An output that records each safe-state command."""
 
-    def __init__(self, name: str, log: list[str] | None = None, fail: Exception | None = None):
+    def __init__(self, name: str, log: list[str] | None = None, fail: BaseException | None = None):
         self.name = name
         self.log = log if log is not None else []
         self.fail = fail

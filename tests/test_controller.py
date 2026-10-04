@@ -4,7 +4,7 @@ import pytest
 from fakes import FakeActuator, FakeClock, FakePort
 
 from openreactor.config import DeviceConfig
-from openreactor.controller import TICK_S, Controller, Event
+from openreactor.controller import TICK_S, Controller, ControllerClosed, Event
 from openreactor.ezo import (
     FAMILIES,
     EzoChannel,
@@ -188,10 +188,17 @@ def test_jobs_on_one_circuit_run_one_at_a_time():
 
 def test_run_ticks_every_100_ms_without_drift():
     c, clock = setup()
-    stop_at = 50
-    c.run(lambda: len(clock.sleeps) >= stop_at)
-    assert clock.now == pytest.approx(stop_at * TICK_S)
-    assert all(s == pytest.approx(TICK_S) for s in clock.sleeps)
+    starts: list[float] = []
+
+    def step() -> None:
+        starts.append(clock.now)
+        clock.now += 0.03  # each tick takes 30 ms
+
+    c.step = step  # type: ignore[method-assign]
+    c.run(lambda: len(starts) >= 50)
+    # Every tick starts on a 100 ms boundary: the time spent in a tick is
+    # taken out of the sleep, not added to it.
+    assert starts == [pytest.approx(i * TICK_S) for i in range(50)]
 
 
 def test_an_overrunning_tick_is_not_made_up():
@@ -231,3 +238,134 @@ def test_the_controller_thread_handles_stop_all_and_closes():
     assert log == ["safe heater", "safe heater"]
     assert [e.source for e in events] == ["system"]
     assert not any(t.name == "openreactor-controller" for t in threading.enumerate())
+
+
+# Review fixes: stop-all must be fast and certain
+
+
+def test_a_failing_listener_does_not_cut_stop_all_short():
+    log: list[str] = []
+    c, clock = setup(actuators=[FakeActuator("heater", log), FakeActuator("motors", log)])
+
+    def broken(item: Result | Event) -> None:
+        raise BrokenPipeError
+
+    c.subscribe(broken)
+    future = c.stop_all()
+    tick(c, clock)
+
+    assert log == ["safe heater", "safe motors"]
+    assert [e.result for e in future.result()] == ["ok", "ok"]
+
+
+def test_an_interrupt_during_stop_all_still_makes_every_actuator_safe():
+    log: list[str] = []
+    c, _ = setup(
+        actuators=[
+            FakeActuator("heater", log, fail=KeyboardInterrupt()),
+            FakeActuator("motors", log),
+        ]
+    )
+    with pytest.raises(KeyboardInterrupt):
+        c.close()
+    assert log == ["safe motors"]
+
+
+def test_close_cancels_a_half_finished_calibration():
+    port = FakePort("ec")
+    c, clock = setup(("ec", "ezo-ec", port))
+    job = c.run_job("ec", calibrate_steps(FAMILIES["ezo-ec"], port, "dry", None))
+    read = c.read_cycle()
+    tick(c, clock)  # the job starts: the temperature reset is sent
+    assert port.sent == ["temperature 25.0"]
+
+    clock.now += 5.0  # long past the step's delay
+    c.close()
+
+    assert port.sent == ["temperature 25.0"]  # no Cal after the close
+    assert isinstance(job.exception(), ControllerClosed)
+    assert read.done()
+
+
+def test_close_twice_does_nothing_the_second_time():
+    log: list[str] = []
+    c, _ = setup(actuators=[FakeActuator("heater", log)])
+    assert len(c.close()) == 1
+    assert c.close() == []
+    assert log == ["safe heater"]
+
+
+def test_a_read_cycle_completes_while_auto_reads_keep_circuits_busy():
+    # The period is shorter than the read delay, so an auto read is always
+    # in flight; the request completes on the reads it joined.
+    a, b = FakePort("ph", PH, wait_ms=900), FakePort("orp", ORP, wait_ms=900)
+    clock = FakeClock()
+    channels = [
+        EzoChannel(DeviceConfig("ph", "ezo-ph", "/dev/i2c-1", 0x63), a),
+        EzoChannel(DeviceConfig("orp", "ezo-orp", "/dev/i2c-1", 0x62), b),
+    ]
+    reader = EzoReader(channels, clock=clock, sleep=clock.sleep)
+    c = Controller(reader, ezo_period_s=0.8, auto_read=True, clock=clock, sleep=clock.sleep)
+    for offset in range(20):
+        future = c.read_cycle()
+        tick(c, clock, offset % 7 + 1)
+        tick(c, clock, 30)
+        assert future.done(), offset
+        assert sorted(r.channel for r in future.result()) == ["orp", "ph"]
+
+
+def test_wait_refuses_while_the_controller_has_its_own_thread():
+    c = Controller(EzoReader([]), ezo_period_s=2.0)
+    c.start()
+    try:
+        with pytest.raises(RuntimeError, match="own thread"):
+            c.wait(c.stop_all())
+        with pytest.raises(RuntimeError, match="already running"):
+            c.start()
+    finally:
+        c.close(timeout_s=2)
+
+
+def test_a_failing_tick_does_not_kill_the_controller_thread():
+    log: list[str] = []
+    reader = EzoReader([])
+    calls = {"n": 0}
+    original = reader.collect
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("bus glitch")
+        return original()
+
+    reader.collect = flaky  # type: ignore[method-assign]
+    c = Controller(reader, [FakeActuator("heater", log)], ezo_period_s=2.0)
+    c.start()
+    try:
+        assert [e.result for e in c.stop_all().result(timeout=2)] == ["ok"]
+        assert calls["n"] >= 2
+    finally:
+        c.close(timeout_s=2)
+    assert log.count("safe heater") == 2
+
+
+def test_close_gives_up_on_a_hung_actuator_without_hanging_the_process():
+    release = threading.Event()
+
+    class Hung:
+        name = "heater"
+
+        def send_safe(self) -> None:
+            release.wait(5)
+
+    c = Controller(EzoReader([]), [Hung()], ezo_period_s=2.0)
+    c.start()
+    thread = next(t for t in threading.enumerate() if t.name == "openreactor-controller")
+    try:
+        with pytest.raises(TimeoutError):
+            c.close(timeout_s=0.3)
+        # Still stuck in the actuator, but a daemon: it cannot keep the
+        # process alive.
+        assert thread.is_alive() and thread.daemon
+    finally:
+        release.set()

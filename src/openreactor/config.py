@@ -56,9 +56,6 @@ class ControllerConfig:
     slice_poll_s: float = 1.0
     ezo_period_s: float = 2.0
     watchdog_timeout_ms: int = 5000
-    # Holds the controller lock and, later, the database. None means the
-    # per-user default; see openreactor.lock.state_dir().
-    state_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,9 +224,7 @@ class _Parser:
         t = self.table(raw, "controller")
         if t is None:
             return default
-        self.unknown_keys(
-            t, ("slice_poll_s", "ezo_period_s", "watchdog_timeout_ms", "state_dir"), "controller"
-        )
+        self.unknown_keys(t, ("slice_poll_s", "ezo_period_s", "watchdog_timeout_ms"), "controller")
         slice_poll_s = default.slice_poll_s
         if "slice_poll_s" in t:
             value = self.positive(t["slice_poll_s"], "controller.slice_poll_s")
@@ -251,13 +246,7 @@ class _Parser:
                 self.invalid_timing.add("watchdog_timeout_ms")
             else:
                 watchdog_timeout_ms = wd
-        state_dir = None
-        if "state_dir" in t:
-            state_dir = self.string(t, "state_dir", "controller")
-            if state_dir is not None and not state_dir.startswith("/"):
-                self.error("controller.state_dir", "must be an absolute path")
-                state_dir = None
-        return ControllerConfig(slice_poll_s, ezo_period_s, watchdog_timeout_ms, state_dir)
+        return ControllerConfig(slice_poll_s, ezo_period_s, watchdog_timeout_ms)
 
     def device(self, raw: Any, path: str) -> DeviceConfig | None:
         t = self.table(raw, path)

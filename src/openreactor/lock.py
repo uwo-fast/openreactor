@@ -1,23 +1,22 @@
-"""One controller at a time: a lock file in the state directory, held for as
-long as a controller owns the bus."""
+"""One controller at a time: a lock file held for as long as a controller owns
+the bus.
+
+The lock is machine-wide, not per user, because the bus is: a command run
+with sudo and one run by a lab user must refuse each other. It lives in
+/run/lock, which every user can write to, and is created readable and
+writable by everyone so any user's command can take it, or say who holds it.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import getpass
 import os
 import sys
 from pathlib import Path
 
-LOCK_NAME = "openreactor.lock"
-
-
-def state_dir(configured: str | None) -> Path:
-    """The configured state directory, or the per-user default
-    (``$XDG_STATE_HOME/openreactor``, else ``~/.local/state/openreactor``)."""
-    if configured is not None:
-        return Path(configured)
-    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return Path(base) / "openreactor"
+LOCK_PATH = Path("/run/lock/openreactor.lock")
 
 
 class LockHeld(Exception):
@@ -30,25 +29,28 @@ class LockHeld(Exception):
 
 
 class ControllerLock:
-    """An exclusive, non-blocking ``flock`` on ``<state_dir>/openreactor.lock``.
+    """An exclusive, non-blocking ``flock`` on ``path``.
 
-    The file records the holder's pid and command line so a refused command
-    can say who holds it. The lock is released when the process exits, even
-    if it is killed.
+    The file records the holder's user, pid and command line so a refused
+    command can say who holds it. The kernel releases the lock when the
+    process exits, even if it is killed.
     """
 
-    def __init__(self, directory: Path):
-        self.path = directory / LOCK_NAME
+    def __init__(self, path: Path = LOCK_PATH):
+        self.path = path
         self._fd: int | None = None
 
     def acquire(self) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise OSError(
-                e.errno, f"cannot create the state directory: {e.strerror}", str(self.path.parent)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o666)
+        except PermissionError as e:
+            raise PermissionError(
+                e.errno, f"cannot open the controller lock: {e.strerror}", str(self.path)
             ) from e
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        # The umask may have narrowed the mode; widen it so other users can
+        # open the file. Only its creator can, which is enough.
+        with contextlib.suppress(PermissionError):
+            os.fchmod(fd, 0o666)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -56,7 +58,8 @@ class ControllerLock:
             os.close(fd)
             raise LockHeld(self.path, holder) from None
         os.ftruncate(fd, 0)
-        os.pwrite(fd, f"pid {os.getpid()}: {' '.join(sys.argv)}\n".encode(), 0)
+        holder = f"{getpass.getuser()}, pid {os.getpid()}: {' '.join(sys.argv)}\n"
+        os.pwrite(fd, holder.encode(), 0)
         self._fd = fd
 
     def release(self) -> None:
