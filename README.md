@@ -88,7 +88,9 @@ watchdog disarmed) or a trip (tripped, or a changed trip count) is logged, and
 the desired state is sent again: mode, setpoints, periods, thermocouples, gains,
 and the watchdog armed. The next poll checks that it took; if it did not, that
 is logged and it is sent again at the next scheduled check, and if sending
-failed, at the next poll. A slice built with `RLHT_WATCHDOG_BOOT_MS` arms its
+failed, at the next poll. A watchdog read that fails is tried again after the
+next poll; after 3 in a row that is logged, and it waits for its usual slot.
+A slice built with `RLHT_WATCHDOG_BOOT_MS` arms its
 watchdog at boot, so its reboot is seen only if it had tripped before (#53).
 A failed read is retried twice in the same poll; after 3 failed
 polls in a row the slice shows as unreachable until it answers again. An e-stop

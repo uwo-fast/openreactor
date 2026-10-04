@@ -168,6 +168,8 @@ class FakeRlht:
         # OSError fails the next read or write with it.
         self.faults: list[str | OSError] = []
         self.fail_opcodes: dict[int, BaseException] = {}
+        # Replies to these opcodes read as all 0xFF while GET_STATE still works.
+        self.corrupt_replies: set[int] = set()
         # GET_STATE replies served: the firmware feeds its watchdog on each.
         self.state_replies = 0
         self.watchdog_replies = 0
@@ -255,6 +257,8 @@ class FakeRlht:
             self.state_replies += 1
         elif self.staged == 0x7D:
             self.watchdog_replies += 1
+        if self.staged in self.corrupt_replies:
+            return b"\xff" * count
         frame = encode(Message(self.type_id, self.staged, self.reply()))
         return (frame + b"\xff" * count)[:count]
 

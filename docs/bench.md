@@ -160,4 +160,6 @@ Each one leaves an event in the run and shows in `/api/v1/status`.
 6. **Unreachable:** disconnect the slice's I2C. After 3 failed polls, a
    `slice-unreachable` event, and `/api/v1/status` shows it unreachable.
    Reconnect it: a `slice-reachable` event, and the watchdog is checked at
-   once, so a slice that lost power meanwhile also gives step 4's event.
+   once, so a slice that lost power meanwhile also gives step 4's event. A
+   disconnect longer than `watchdog_timeout_ms` also gives a `slice-trip`
+   event with result `re-asserted`.

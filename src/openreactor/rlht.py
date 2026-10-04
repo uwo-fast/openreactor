@@ -14,7 +14,7 @@ Start-up, in order, before the controller ticks (#24):
    controller's timeout and confirmed with GET_WATCHDOG. A slice without it
    is read-only unless its config sets ``allow_unprotected``.
 5. What the config sets, each only if the slice can take it: closed-loop
-   mode, thermocouple select, periods, gains.
+   mode, periods, thermocouple select, gains.
 
 The safe state is always SET_SETPOINTS(0, 0) and then SET_OPEN_DUTY(0, 0),
 both sent even if the first fails. It never switches the slice to open loop.
@@ -178,6 +178,7 @@ class RlhtSlice:
         self._failed_polls = 0
         self._check_owed = False
         self._confirming = False
+        self._failed_checks = 0
         self._trip_count = 0
         self._last_state: RlhtStateResult | None = None
         self.unreachable = False
@@ -383,9 +384,28 @@ class RlhtSlice:
         phase, self._phase = self._phase, None
         if phase == "watchdog":
             # The slice answered GET_STATE this cycle: it is reachable. The
-            # check is owed, after the next cycle's state poll.
-            self._check_owed = True
-            return []
+            # check is owed, after the next cycle's state poll, until it has
+            # failed UNREACHABLE_AFTER times in a row; then it waits for its
+            # usual slot.
+            self._failed_checks += 1
+            if self._failed_checks < UNREACHABLE_AFTER:
+                self._check_owed = True
+                return []
+            if self._failed_checks > UNREACHABLE_AFTER:
+                return []
+            return [
+                Event(
+                    self._wall(),
+                    "system",
+                    "slice-unchecked",
+                    device=self.name,
+                    details=(
+                        f"{UNREACHABLE_AFTER} watchdog checks failed in a row: "
+                        f"{_describe(e)}; trips and reboots go unseen until one answers"
+                    ),
+                    result="error",
+                )
+            ]
         return self._poll_failed(e)
 
     def _poll_failed(self, e: BaseException) -> list[Result | Event]:
@@ -410,8 +430,10 @@ class RlhtSlice:
         if not self.unreachable:
             return []
         self.unreachable = False
-        # It may have restarted while it did not answer: check it now.
+        # It may have restarted while it did not answer: check it now, as a
+        # fresh check, whatever was pending before.
         self._check_owed = self.protected
+        self._confirming = False
         return [Event(self._wall(), "system", "slice-reachable", device=self.name)]
 
     def _estop(self, state: RlhtStateResult) -> list[Result | Event]:
@@ -451,6 +473,7 @@ class RlhtSlice:
     def _supervise(self, watchdog: BreadWatchdogResult) -> list[Result | Event]:
         """A trip or a reboot means the slice dropped what it was told:
         re-assert it once, and check it took in the next cycle."""
+        self._failed_checks = 0
         baseline = self._trip_count
         self._trip_count = watchdog.trip_count
         confirming, self._confirming = self._confirming, False
