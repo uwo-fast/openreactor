@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from openreactor.config import SLICE_KINDS
+from openreactor.config import SETPOINT_MAX_C, SLICE_KINDS
 from openreactor.ezo import FAMILIES
 from openreactor.service import Service
 
@@ -83,9 +83,15 @@ def login_page(request: Request, error: str = "", status_code: int = 200) -> HTM
     return _render(request, "login.html", status_code=status_code, error=error)
 
 
-def _actuated(svc: Service) -> list[dict[str, str]]:
+def _actuated(svc: Service) -> list[dict[str, Any]]:
     return [
-        {"name": ch.name, "label": ch.label, "device": d.name, "kind": d.kind}
+        {
+            "name": ch.name,
+            "label": ch.label,
+            "device": d.name,
+            "kind": d.kind,
+            "max": ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C,
+        }
         for d in svc.config.devices
         if d.kind in SLICE_KINDS
         for ch in d.channels
@@ -244,7 +250,7 @@ async def setpoint(request: Request, channel: str) -> HTMLResponse:
 
     def work() -> str:
         svc.set_setpoint(channel, value)
-        return f"{channel} set to {value:g}."
+        return f"{channel} set to {round(value * 10) / 10:g} °C."
 
     return await _act(request, work)
 

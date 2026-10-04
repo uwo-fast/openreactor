@@ -46,7 +46,7 @@ from openreactor.auth import verify_password
 from openreactor.config import Config
 from openreactor.controller import ControllerClosed
 from openreactor.ezo import EzoDeviceError, EzoStatusError
-from openreactor.service import Conflict, Invalid, NotFound, Service, Unavailable
+from openreactor.service import Conflict, Invalid, NotFound, Service, Unavailable, Unreachable
 from openreactor.storage import StorageError
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -449,6 +449,7 @@ ERRORS: tuple[tuple[type[Exception], int], ...] = (
     (Conflict, 409),
     (Unavailable, 409),
     (Invalid, 422),
+    (Unreachable, 503),
     # The circuit refused the command or could not be reached.
     (EzoStatusError, 502),
     (EzoDeviceError, 502),

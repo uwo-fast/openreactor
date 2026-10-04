@@ -7,7 +7,14 @@ from fakes import FakeActuator, FakeClock, FakeI2cBus, FakeRlht
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Controller
 from openreactor.ezo import EzoReader, Outcome, Result
-from openreactor.rlht import READS_PER_POLL, CrumbsPort, RlhtSlice, SliceError, opened_slices
+from openreactor.rlht import (
+    READS_PER_POLL,
+    CrumbsPort,
+    RlhtSlice,
+    SliceBusy,
+    SliceError,
+    opened_slices,
+)
 
 SET_SETPOINTS, SET_OPEN_DUTY, SET_MODE, SET_PID, SET_PERIODS, SET_TC = (
     0x02,
@@ -756,3 +763,75 @@ def test_three_failed_polls_make_the_slice_unreachable_and_an_answer_brings_it_b
     assert events(seen, "slice-reachable") and not s.unreachable
     # It may have restarted while silent: the watchdog is checked at once.
     assert rlht.watchdog_replies > before
+
+
+# Setpoints
+
+
+def test_a_setpoint_is_sent_at_once_and_kept_for_a_re_assert():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.commands.clear()
+    s.set_setpoint(1, 370)
+    s.set_setpoint(2, 450)
+    assert rlht.commands == [
+        (SET_SETPOINTS, struct.pack("<hh", 370, 0)),
+        (SET_SETPOINTS, struct.pack("<hh", 370, 450)),
+    ]
+    rlht.reboot()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-reboot")[-1].result == "re-asserted"
+    assert rlht.setpoints == [370, 450]
+
+
+def test_a_setpoint_that_is_not_sent_is_not_kept():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EREMOTEIO, "Remote I/O error")
+    with pytest.raises(SliceError, match="no answer on the bus"):
+        s.set_setpoint(1, 370)
+    del rlht.fail_opcodes[SET_SETPOINTS]
+    rlht.reboot()
+    tick(c, clock, 6.0)
+    # The re-assert sends what was last set successfully, not the failure.
+    assert rlht.setpoints == [0, 0]
+
+
+def test_a_setpoint_is_refused_while_the_e_stop_is_held():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.flags = 0x01
+    tick(c, clock, 1.5)
+    rlht.commands.clear()
+    with pytest.raises(SliceBusy, match="e-stop on heater is held"):
+        s.set_setpoint(1, 370)
+    assert SET_SETPOINTS not in ops(rlht) and s.setpoints_deci == [0, 0]
+
+
+def test_a_setpoint_is_refused_by_a_slice_that_cannot_take_one():
+    read_only, _ = started(FakeRlht(caps=0x3F))
+    assert read_only.read_only
+    with pytest.raises(SliceBusy, match="read-only"):
+        read_only.set_setpoint(1, 370)
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, _ = controller_for(s, clock)
+    rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")] * 9
+    tick(c, clock, 3.0)
+    assert s.unreachable
+    with pytest.raises(SliceError, match="unreachable"):
+        s.set_setpoint(1, 370)
+    clock = FakeClock()
+    never_started = RlhtSlice(
+        device(),
+        CrumbsPort(FakeI2cBus({0x0A: FakeRlht()}), 0x0A, sleep=clock.sleep),
+        watchdog_timeout_ms=5000,
+        poll_s=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    with pytest.raises(SliceError, match="did not finish start-up"):
+        never_started.set_setpoint(1, 370)

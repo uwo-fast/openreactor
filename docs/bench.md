@@ -139,8 +139,16 @@ DO firmware V2.13 or later; record each circuit's firmware (`i`) in the row.
 
 ## How to run the RLHT checks
 
-With an RLHT slice in the config and `openreactor serve` (or `run`) going.
-Each one leaves an event in the run and shows in `/api/v1/status`.
+With an RLHT slice in the config and `openreactor run` going: it prints each
+event as it happens, and records it in the run. `serve` records events only
+while a run is recording, and `/api/v1/status` shows only whether a slice is
+unreachable or held by its e-stop. To heat an output, serve and set its
+setpoint:
+
+```sh
+curl -s -X PUT localhost:8080/api/v1/channels/jacket/setpoint \
+  -H 'Content-Type: application/json' -d '{"value": 40}'
+```
 
 1. **Watchdog armed:** the start-up event reads `watchdog armed at <timeout> ms`.
 2. **Watchdog trip:** stop openreactor without stop-all (`kill -9` the
@@ -150,8 +158,9 @@ Each one leaves an event in the run and shows in `/api/v1/status`.
    timeout (unplug the slice's I2C briefly). Within five polls of it answering
    again, a `slice-trip` event with result `re-asserted`.
 4. **Re-assert after a power-cycle:** power-cycle the slice while openreactor
-   runs. A `slice-reboot` event with result `re-asserted`, and GET_STATE shows
-   the configured mode and thermocouples again. This is for a default build,
+   runs with a setpoint set. A `slice-reboot` event with result
+   `re-asserted`, and the channel's setpoint reading shows it again. This is
+   for a default build,
    which boots disarmed. A build with `RLHT_WATCHDOG_BOOT_MS` gives a
    `slice-trip` instead, and only if it had tripped before (#53).
 5. **E-stop:** press the slice's e-stop. An `e-stop` event with result `held`,

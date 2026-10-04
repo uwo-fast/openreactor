@@ -8,6 +8,7 @@ their own, so request threads never write.
 
 from __future__ import annotations
 
+import math
 import tempfile
 import threading
 import time
@@ -20,7 +21,7 @@ from typing import TypeVar
 
 from crumbs_i2c import Bus, LinuxBus
 
-from openreactor.config import Config, DeviceConfig
+from openreactor.config import SETPOINT_MAX_C, ChannelConfig, Config, DeviceConfig
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
     FAMILIES,
@@ -37,7 +38,7 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
-from openreactor.rlht import RlhtSlice, opened_slices
+from openreactor.rlht import RlhtSlice, SliceBusy, SliceError, opened_slices
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -73,6 +74,10 @@ class Conflict(Exception):
 
 class Unavailable(Exception):
     """The action needs something this build or this hardware lacks."""
+
+
+class Unreachable(Exception):
+    """The device is configured but cannot be reached now."""
 
 
 class Invalid(Exception):
@@ -189,12 +194,53 @@ class Service:
         return recorder.failed if recorder is not None else None
 
     def set_setpoint(self, channel: str, value: float) -> None:
+        """Set an RLHT channel's setpoint in °C, to the slice's tenth of a
+        degree. It stays the desired setpoint, sent again after a trip or a
+        reboot, until it is set again or stop-all or an e-stop zeroes it."""
         for d in self.config.devices:
-            if any(ch.name == channel for ch in d.channels):
-                raise Unavailable(
-                    f"{channel} is on a {d.kind} slice; setpoints on slices are not supported yet"
-                )
+            for ch in d.channels:
+                if ch.name == channel:
+                    self._set_slice_setpoint(d, ch, value)
+                    return
         raise NotFound(f"no actuated channel {channel!r}")
+
+    def _set_slice_setpoint(self, d: DeviceConfig, ch: ChannelConfig, value: float) -> None:
+        if d.kind != "rlht":
+            raise Unavailable(
+                f"{ch.name} is on a {d.kind} slice; DCMT slices are not supported yet"
+            )
+        limit = ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
+        if not math.isfinite(value) or value < 0:
+            raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
+        if value > limit:
+            what = "its max_setpoint" if ch.max_setpoint is not None else "the most the slice takes"
+            raise Invalid(f"{ch.name}: {value:g} °C is above {what}, {limit:g} °C")
+        s = self._slices.get(d.name)
+        if s is None:
+            problem = self._problems.get(d.name)
+            why = f": {problem.detail}" if problem is not None and problem.detail else ""
+            raise Unreachable(f"{d.name} is not in use{why}")
+        deci = round(value * 10)
+
+        def work() -> None:
+            s.set_setpoint(ch.output, deci)
+            self.controller.publish(
+                Event(
+                    self._wall(),
+                    "user",
+                    "setpoint",
+                    device=d.name,
+                    channel=ch.name,
+                    details=f"{deci / 10:g} °C",
+                )
+            )
+
+        try:
+            _wait(self.controller.call(work))
+        except SliceBusy as e:
+            raise Conflict(str(e)) from None
+        except SliceError as e:
+            raise Unreachable(str(e)) from None
 
     # Stop-all
 

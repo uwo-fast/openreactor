@@ -98,8 +98,16 @@ pressed on a slice sends stop-all, and its setpoints stay at zero until the
 operator sets them again. Stop-all sends every slice its safe state, and its
 setpoints stay at zero the same way. Until feastorg/Slice_RLHT#13
 is fixed, that does not turn a running heater off at once: the slice keeps its
-PID integral, so the output decays to off over seconds (#51). Setpoints on slices come
-next (#24).
+PID integral, so the output decays to off over seconds (#51).
+
+An RLHT channel's setpoint is set from the API
+(`PUT /api/v1/channels/<name>/setpoint`) or the Controls page, in °C to the
+slice's tenth of a degree: from 0 up to the channel's `max_setpoint`, or
+3276.7 °C when the config sets none. It is refused while the slice's e-stop
+is held or the slice is read-only (409), and while it is unreachable (503).
+Each one sent is an event in the run. It stays the desired setpoint, sent
+again after a trip or a reboot, until it is set again or stop-all or an
+e-stop zeroes it. It is not restored after a restart.
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
 `storage.database`, by default `~/.local/state/openreactor/openreactor.db`. An

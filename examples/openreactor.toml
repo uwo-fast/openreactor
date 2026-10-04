@@ -50,6 +50,9 @@ channels.jacket = { label = "Jacket heater", output = 1, tc = 1 }
 # keeps its own. For example, both outputs tuned:
 # channels.jacket = { label = "Jacket heater", output = 1, tc = 1, kp = 2.0, ki = 0.1, kd = 0.5, period_ms = 2000 }
 # channels.lid = { label = "Lid heater", output = 2, tc = 2, kp = 2.0, ki = 0.1, kd = 0.5 }
+# Also optional per channel: the highest setpoint, in °C, the API and the UI
+# accept (max_setpoint). Unset, up to 3276.7 °C, all the slice can take.
+# channels.jacket = { label = "Jacket heater", output = 1, tc = 1, max_setpoint = 90 }
 # A slice without the watchdog capability is read-only unless this is true.
 # If openreactor stops or the Pi loses power, such a slice keeps its last
 # output.

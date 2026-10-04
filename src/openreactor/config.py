@@ -35,6 +35,8 @@ WATCHDOG_MAX_MS = 65535  # a u16 on the wire
 
 # RLHT gains go to the slice as one byte each, ten times the gain.
 GAINS = ("kp", "ki", "kd")
+# The slice takes setpoints as i16 tenths of a degree.
+SETPOINT_MAX_C = 3276.7
 GAIN_MAX = 25.5
 # An RLHT output's time-proportioning period: the firmware clamps anything
 # else into this range without saying so.
@@ -90,6 +92,8 @@ class ChannelConfig:
     ki: float | None = None
     kd: float | None = None
     period_ms: int | None = None
+    # RLHT only: the highest setpoint the API and UI accept, in °C.
+    max_setpoint: float | None = None
 
 
 @dataclass(frozen=True)
@@ -381,7 +385,9 @@ class _Parser:
             return ()
         out_key = OUTPUT_KEY[kind]
         allowed = (
-            ("label", out_key, "tc", *GAINS, "period_ms") if kind == "rlht" else ("label", out_key)
+            ("label", out_key, "tc", *GAINS, "period_ms", "max_setpoint")
+            if kind == "rlht"
+            else ("label", out_key)
         )
         result: list[ChannelConfig] = []
         used: dict[int, str] = {}
@@ -418,6 +424,15 @@ class _Parser:
                         "slice uses",
                     )
                     period_ms = None
+            max_setpoint = None
+            if kind == "rlht" and "max_setpoint" in ch:
+                max_setpoint = self.positive(ch["max_setpoint"], f"{cpath}.max_setpoint")
+                if max_setpoint is not None and max_setpoint > SETPOINT_MAX_C:
+                    self.error(
+                        f"{cpath}.max_setpoint",
+                        f"must be at most {SETPOINT_MAX_C}, the highest setpoint the slice takes",
+                    )
+                    max_setpoint = None
             if gains is not None:
                 tuned.append(ch_name)
             if name_ok:
@@ -432,6 +447,7 @@ class _Parser:
                         ki=ki,
                         kd=kd,
                         period_ms=period_ms,
+                        max_setpoint=max_setpoint,
                     )
                 )
         if kind == "rlht" and tuned and (len(tuned) != len(t) or set(used) != {1, 2}):

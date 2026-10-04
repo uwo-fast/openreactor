@@ -1,3 +1,4 @@
+import errno
 import io
 import time
 import zipfile
@@ -43,7 +44,7 @@ name = "heater"
 kind = "rlht"
 bus = "/dev/i2c-1"
 address = 0x0A
-channels.jacket = { output = 1, tc = 1 }
+channels.jacket = { output = 1, tc = 1, max_setpoint = 80 }
 
 [[device]]
 name = "air"
@@ -187,15 +188,53 @@ def test_stop_all_returns_its_events(open_bench):
     assert bench.log == ["safe jacket"]
 
 
-def test_a_setpoint_on_a_slice_is_not_supported_yet(open_bench):
-    _, client = open_bench
-    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 37.0})
-    assert r.status_code == 409
-    assert "slices are not supported yet" in r.json()["detail"]
-    r = client.put("/api/v1/channels/nothing/setpoint", json={"value": 37.0})
-    assert r.status_code == 404
-    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": "hot"})
-    assert r.status_code == 422
+def jacket_setpoint(client: TestClient) -> float | None:
+    for c in client.get("/api/v1/channels").json():
+        if c["name"] == "jacket.setpoint":
+            return c["value"]
+    return None
+
+
+def test_a_setpoint_reaches_the_slice_and_is_recorded(open_bench):
+    bench, client = open_bench
+    run = client.post("/api/v1/runs", json={"name": "heat"}).json()["id"]
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 37.06})
+    assert r.status_code == 204
+    # Rounded to the slice's tenth of a degree, on output 1, output 2 left at 0.
+    assert bench.rlht.setpoints == [371, 0]
+    until(lambda: jacket_setpoint(client) == 37.1)
+    client.post("/api/v1/runs/current/stop")
+    export = client.get(f"/api/v1/runs/{run}/export")
+    with zipfile.ZipFile(io.BytesIO(export.content)) as z:
+        events = z.read("events.csv").decode()
+    assert "setpoint" in events and "37.1 °C" in events and "jacket" in events
+
+
+def test_a_setpoint_is_checked_before_it_is_sent(open_bench):
+    bench, client = open_bench
+
+    def put(value: object) -> tuple[int, str]:
+        r = client.put("/api/v1/channels/jacket/setpoint", json={"value": value})
+        return r.status_code, r.text
+
+    bench.rlht.commands.clear()
+    assert put(-1)[0] == 422
+    code, text = put(80.1)
+    assert code == 422 and "above its max_setpoint, 80 °C" in text
+    assert put("hot")[0] == 422
+    assert client.put("/api/v1/channels/nothing/setpoint", json={"value": 1}).status_code == 404
+    assert bench.rlht.commands == []
+    assert put(80)[0] == 204
+    assert bench.rlht.setpoints == [800, 0]
+
+
+def test_a_setpoint_for_an_unreachable_slice_is_refused(open_bench):
+    bench, client = open_bench
+    bench.rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")] * 10_000
+    until(lambda: "unreachable" in str(client.get("/api/v1/status").json()["devices"]))
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 37})
+    assert r.status_code == 503
+    assert "unreachable" in r.json()["detail"]
 
 
 def test_a_run_starts_records_stops_and_exports(open_bench):
@@ -817,3 +856,8 @@ def test_status_shows_a_slice_e_stop_and_stop_all_reaches_everything(open_bench)
     status = {d["name"]: d["status"] for d in client.get("/api/v1/status").json()["devices"]}
     assert status["heater"] == "e-stop held on the slice"
     assert "safe jacket" in bench.log  # stop-all reached the other actuator too
+    # Nothing restarts heating while it is held.
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 37})
+    assert r.status_code == 409
+    assert "e-stop on heater is held" in r.json()["detail"]
+    assert bench.rlht.setpoints == [0, 0]

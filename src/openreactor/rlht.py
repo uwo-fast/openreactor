@@ -99,6 +99,11 @@ class SliceError(Exception):
     too old, or would not arm its watchdog."""
 
 
+class SliceBusy(Exception):
+    """The slice cannot take a setpoint as it is: its e-stop is held, or it
+    is read-only."""
+
+
 class SlicePort(Protocol):
     """One slice on the bus. ``stage`` asks for a reply (SET_REPLY);
     ``read`` reads it and checks it is the reply asked for. ``query`` does
@@ -309,6 +314,29 @@ class RlhtSlice:
             self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0))
         finally:
             self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
+
+    def set_setpoint(self, output: int, deci: int) -> None:
+        """An operator's setpoint for one output, in tenths of a degree,
+        sent at once. Called on the controller's thread. The desired
+        setpoints, which a re-assert sends again, change only once it is
+        sent."""
+        if not self.started:
+            raise SliceError(f"{self.name} did not finish start-up")
+        if self.read_only:
+            raise SliceBusy(f"{self.name} is read-only: the slice has no command watchdog")
+        if self.estop:
+            raise SliceBusy(
+                f"the e-stop on {self.name} is held; release it, then set the setpoint again"
+            )
+        if self.unreachable:
+            raise SliceError(f"{self.name} is unreachable: {UNREACHABLE_AFTER} polls failed")
+        wanted = list(self.setpoints_deci)
+        wanted[output - 1] = deci
+        try:
+            self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(wanted[0], wanted[1]))
+        except (CrumbsError, OSError) as e:
+            raise SliceError(f"{self.name}: {_describe(e)}") from e
+        self.setpoints_deci = wanted
 
     # The poll: called each controller tick, never waits.
     #
