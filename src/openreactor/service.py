@@ -38,7 +38,7 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
-from openreactor.rlht import RlhtSlice, SliceBusy, SliceError, opened_slices
+from openreactor.rlht import RlhtSlice, SendFailed, SliceBusy, SliceError, opened_slices
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -78,6 +78,10 @@ class Unavailable(Exception):
 
 class Unreachable(Exception):
     """The device is configured but cannot be reached now."""
+
+
+class DeviceFailed(Exception):
+    """The device was sent the command, and the send failed."""
 
 
 class Invalid(Exception):
@@ -212,33 +216,45 @@ class Service:
         limit = ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
         if not math.isfinite(value) or value < 0:
             raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
-        if value > limit:
+        deci = round(value * 10)
+        # Compared as sent, in tenths: 80.06 would go as 80.1.
+        if deci > math.floor(limit * 10 + 1e-9):
             what = "its max_setpoint" if ch.max_setpoint is not None else "the most the slice takes"
-            raise Invalid(f"{ch.name}: {value:g} °C is above {what}, {limit:g} °C")
+            raise Invalid(f"{ch.name}: {deci / 10:g} °C is above {what}, {limit:g} °C")
         s = self._slices.get(d.name)
         if s is None:
             problem = self._problems.get(d.name)
             why = f": {problem.detail}" if problem is not None and problem.detail else ""
             raise Unreachable(f"{d.name} is not in use{why}")
-        deci = round(value * 10)
+
+        def event(result: str = "ok") -> Event:
+            return Event(
+                self._wall(),
+                "user",
+                "setpoint",
+                device=d.name,
+                channel=ch.name,
+                details=f"{deci / 10:g} °C",
+                result=result,
+            )
 
         def work() -> None:
-            s.set_setpoint(ch.output, deci)
-            self.controller.publish(
-                Event(
-                    self._wall(),
-                    "user",
-                    "setpoint",
-                    device=d.name,
-                    channel=ch.name,
-                    details=f"{deci / 10:g} °C",
-                )
-            )
+            try:
+                s.set_setpoint(ch.output, deci)
+            except SendFailed as e:
+                self.controller.publish(event(f"error: {e}"))
+                raise
+            self.controller.publish(event())
 
         try:
             _wait(self.controller.call(work))
         except SliceBusy as e:
             raise Conflict(str(e)) from None
+        except SendFailed as e:
+            # It may have reached the slice: the next polls compare what the
+            # slice runs with what is wanted, and send the safe state if they
+            # differ.
+            raise DeviceFailed(f"{e}; it may have reached the slice") from None
         except SliceError as e:
             raise Unreachable(str(e)) from None
 
@@ -395,11 +411,13 @@ def running(
     lock_path: Path | None = LOCK_PATH,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    on_event: Callable[[Result | Event], None] | None = None,
 ) -> Iterator[Service]:
     """Take the controller lock, open and check the circuits, start the RLHT
     slices, start the controller on its own thread, and yield the service. On
     the way out, stop-all is sent before anything closes. ``lock_path=None``
-    means the caller already holds the lock."""
+    means the caller already holds the lock. ``on_event`` gets each start-up
+    problem and event, then every event the controller publishes."""
     database = Path(config.storage.database) if config.storage.database else default_path()
     with ControllerLock(lock_path) if lock_path is not None else nullcontext():
         channels: list[EzoChannel] = []
@@ -435,6 +453,12 @@ def running(
                 service = Service(
                     config, config_text, controller, database, problems, slices=slices
                 )
+                if on_event is not None:
+                    for item in problems:
+                        on_event(item)
+                    controller.subscribe(
+                        lambda item: on_event(item) if isinstance(item, Event) else None
+                    )
                 controller.start()
                 try:
                     yield service

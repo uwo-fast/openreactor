@@ -76,6 +76,9 @@ class Bench:
         self.log: list[str] = []
         # The config's RLHT, answering on a fake bus.
         self.rlht = FakeRlht()
+        self.rlht_address = 0x0A  # where it answers; the config says 0x0A
+        # What serve would print: start-up problems and events, then events.
+        self.printed: list = []
         self.lock = tmp_path / "openreactor.lock"
 
         def open_port(d: DeviceConfig) -> FakePort:
@@ -87,10 +90,11 @@ class Bench:
                 self.text,
                 open_port=open_port,
                 actuators=[FakeActuator("jacket", self.log)],
-                open_bus=lambda path: FakeI2cBus({0x0A: self.rlht}),
+                open_bus=lambda path: FakeI2cBus({self.rlht_address: self.rlht}),
                 lock_path=self.lock,
                 clock=fast_clock,
                 sleep=fast_sleep,
+                on_event=self.printed.append,
             )
 
         self.app = create_app(self.config, start)
@@ -226,6 +230,56 @@ def test_a_setpoint_is_checked_before_it_is_sent(open_bench):
     assert bench.rlht.commands == []
     assert put(80)[0] == 204
     assert bench.rlht.setpoints == [800, 0]
+
+
+def test_a_setpoint_must_be_a_json_number_and_is_checked_as_sent(open_bench):
+    bench, client = open_bench
+
+    def put(value: object) -> int:
+        return client.put("/api/v1/channels/jacket/setpoint", json={"value": value}).status_code
+
+    assert put(True) == 422
+    assert put("40") == 422
+    # 80.06 would go to the slice as 80.1, above max_setpoint = 80.
+    assert put(80.06) == 422
+    assert put(80.04) == 204
+    assert bench.rlht.setpoints == [800, 0]
+
+
+def test_a_failed_send_is_an_error_event_and_a_502(open_bench):
+    bench, client = open_bench
+    run = client.post("/api/v1/runs", json={"name": "heat"}).json()["id"]
+    bench.rlht.fail_after[0x02] = OSError(errno.ETIMEDOUT, "Connection timed out")
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 70})
+    assert r.status_code == 502
+    assert "it may have reached the slice" in r.json()["detail"]
+    # It did: the polls find the slice running what nobody wants, and stop it.
+    del bench.rlht.fail_after[0x02]
+    until(lambda: bench.rlht.setpoints == [0, 0])
+    client.post("/api/v1/runs/current/stop")
+    export = client.get(f"/api/v1/runs/{run}/export")
+    with zipfile.ZipFile(io.BytesIO(export.content)) as z:
+        events = z.read("events.csv").decode()
+    assert "error: heater: [Errno 110] Connection timed out" in events
+    assert "slice-setpoints-changed" in events
+
+
+def test_a_setpoint_for_a_slice_that_never_answered_is_refused(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.rlht_address = 0x0B  # nothing at the config's 0x0A
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 37})
+    assert r.status_code == 503
+    assert "heater is not in use: no answer on the bus" in r.json()["detail"]
+
+
+def test_serve_prints_start_up_and_events_but_not_readings(open_bench):
+    bench, client = open_bench
+    client.put("/api/v1/channels/jacket/setpoint", json={"value": 37})
+    until(lambda: any(getattr(e, "kind", "") == "setpoint" for e in bench.printed))
+    kinds = [getattr(e, "kind", None) for e in bench.printed]
+    assert kinds[0] == "slice-start"
+    assert all(k is not None for k in kinds), "a reading was printed"
 
 
 def test_a_setpoint_for_an_unreachable_slice_is_refused(open_bench):

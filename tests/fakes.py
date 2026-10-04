@@ -168,6 +168,9 @@ class FakeRlht:
         # OSError fails the next read or write with it.
         self.faults: list[str | OSError] = []
         self.fail_opcodes: dict[int, BaseException] = {}
+        # Commands that the slice takes, but whose send then fails (an ack
+        # lost to a clock stretch, say).
+        self.fail_after: dict[int, BaseException] = {}
         # Replies to these opcodes read as all 0xFF while GET_STATE still works.
         self.corrupt_replies: set[int] = set()
         # GET_STATE replies served: the firmware feeds its watchdog on each.
@@ -205,6 +208,8 @@ class FakeRlht:
             self.periods = [int.from_bytes(data[i : i + 2], "little") for i in (0, 2)]
         elif op == 0x05:
             self.tc = [data[0], data[1]]
+        if op in self.fail_after:
+            raise self.fail_after[op]
 
     def trip(self) -> None:
         """The command watchdog expiring, as watchdogLogic() does it."""

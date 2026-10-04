@@ -99,6 +99,10 @@ class SliceError(Exception):
     too old, or would not arm its watchdog."""
 
 
+class SendFailed(SliceError):
+    """A command that may or may not have reached the slice."""
+
+
 class SliceBusy(Exception):
     """The slice cannot take a setpoint as it is: its e-stop is held, or it
     is read-only."""
@@ -335,7 +339,7 @@ class RlhtSlice:
         try:
             self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(wanted[0], wanted[1]))
         except (CrumbsError, OSError) as e:
-            raise SliceError(f"{self.name}: {_describe(e)}") from e
+            raise SendFailed(f"{self.name}: {_describe(e)}") from e
         self.setpoints_deci = wanted
 
     # The poll: called each controller tick, never waits.
@@ -379,6 +383,7 @@ class RlhtSlice:
         out: list[Result | Event] = self._answered()
         out += self._estop(state)
         out += self._readings(state)
+        out += self._drifted(state)
         self._polls += 1
         if self.protected and (self._check_owed or self._polls % WATCHDOG_EVERY == 0):
             self._check_owed = False
@@ -500,6 +505,52 @@ class RlhtSlice:
             ]
         return []
 
+    def _drift(self, state: RlhtStateResult) -> bool:
+        """The slice runs other setpoints than openreactor wants. A held
+        e-stop is handled on its own, and a read-only slice is not ours to
+        set."""
+        if self.estop or self.read_only:
+            return False
+        return [state.sp1_deci_c, state.sp2_deci_c] != self.setpoints_deci
+
+    def _drifted(self, state: RlhtStateResult) -> list[Result | Event]:
+        """A trip or a reboot zeroes the slice's setpoints, and the watchdog
+        check finds those and re-asserts. So the check comes next, and if it
+        finds neither, ``_supervise`` drops the setpoints."""
+        if not self._drift(state):
+            return []
+        if self.protected and self._failed_checks < UNREACHABLE_AFTER:
+            self._check_owed = True
+            return []
+        return self._drop(state)
+
+    def _drop(self, state: RlhtStateResult) -> list[Result | Event]:
+        """Setpoints that changed with no trip or reboot behind them: an
+        e-stop pressed and released between two polls, a setpoint that
+        reached the slice although sending it failed, or another controller.
+        Nothing resumes until the operator sets a setpoint again."""
+        ran = f"{state.sp1_deci_c / 10:g} and {state.sp2_deci_c / 10:g} °C"
+        wanted = f"{self.setpoints_deci[0] / 10:g} and {self.setpoints_deci[1] / 10:g} °C"
+        try:
+            self.send_safe()  # zeroes the desired setpoints too
+            result = "safe state sent"
+        except (CrumbsError, OSError) as e:
+            self.setpoints_deci = [0, 0]
+            result = f"error: safe state not sent: {_describe(e)}"
+        return [
+            Event(
+                self._wall(),
+                "system",
+                "slice-setpoints-changed",
+                device=self.name,
+                details=(
+                    f"the slice ran {ran}, not {wanted}, with no trip or reboot to explain "
+                    "it; setpoints stay at 0 until set again"
+                ),
+                result=result,
+            )
+        ]
+
     def _supervise(self, watchdog: BreadWatchdogResult) -> list[Result | Event]:
         """A trip or a reboot means the slice dropped what it was told:
         re-assert it once, and check it took in the next cycle."""
@@ -520,7 +571,8 @@ class RlhtSlice:
                 f"trips {baseline} -> {watchdog.trip_count})"
             )
         else:
-            return []
+            last = self._last_state
+            return self._drop(last) if last is not None and self._drift(last) else []
         if confirming:
             # The last re-assert did not take. Say so, and wait for the next
             # scheduled check rather than re-asserting at once.

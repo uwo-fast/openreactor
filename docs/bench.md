@@ -139,11 +139,10 @@ DO firmware V2.13 or later; record each circuit's firmware (`i`) in the row.
 
 ## How to run the RLHT checks
 
-With an RLHT slice in the config and `openreactor run` going: it prints each
-event as it happens, and records it in the run. `serve` records events only
-while a run is recording, and `/api/v1/status` shows only whether a slice is
-unreachable or held by its e-stop. To heat an output, serve and set its
-setpoint:
+With an RLHT slice in the config and `openreactor serve` going: it prints
+each event as it happens, and records it in a run while one is recording.
+`/api/v1/status` shows only whether a slice is unreachable or held by its
+e-stop. To heat an output, set its setpoint:
 
 ```sh
 curl -s -X PUT localhost:8080/api/v1/channels/jacket/setpoint \

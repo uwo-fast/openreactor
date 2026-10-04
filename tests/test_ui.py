@@ -117,7 +117,8 @@ def test_start_a_run_stop_it_and_export_it(ui):
 def test_send_a_setpoint(ui):
     bench, client = ui
     assert 'hx-post="/ui/channels/jacket/setpoint"' in client.get("/controls").text
-    assert 'max="80.0"' in client.get("/controls").text
+    controls = client.get("/controls").text
+    assert 'min="0" max="80.0" step="0.1"' in controls
     r = client.post("/ui/channels/jacket/setpoint", data={"value": "37.04"}, headers=HX)
     assert r.status_code == 200
     assert "jacket set to 37 °C." in r.text

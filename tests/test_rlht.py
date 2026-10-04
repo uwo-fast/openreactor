@@ -11,6 +11,7 @@ from openreactor.rlht import (
     READS_PER_POLL,
     CrumbsPort,
     RlhtSlice,
+    SendFailed,
     SliceBusy,
     SliceError,
     opened_slices,
@@ -446,7 +447,7 @@ def test_a_trip_is_detected_from_the_trip_count_alone_and_re_asserted_in_order()
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.trip_count += 1  # armed, not tripped now, but it tripped since
     rlht.commands.clear()
     checks = rlht.watchdog_replies
@@ -475,7 +476,7 @@ def test_a_reboot_is_re_asserted_with_the_desired_setpoints():
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.reboot()
     rlht.commands.clear()
     polls = rlht.state_replies
@@ -548,7 +549,7 @@ def test_a_trip_after_stop_all_does_not_restart_heating():
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     c.stop_all()
     tick(c, clock, 0.2)
     assert s.setpoints_deci == [0, 0]
@@ -697,7 +698,7 @@ def test_an_e_stop_sends_stop_all_and_nothing_resumes():
     s, clock = started(rlht)
     log: list[str] = []
     c, seen = controller_for(s, clock, FakeActuator("fan", log))
-    s.setpoints_deci = [370, 0]
+    s.set_setpoint(1, 370)
     rlht.flags = 0x01  # e-stop pressed on the slice
     rlht.commands.clear()
     tick(c, clock, 3.0)
@@ -835,3 +836,73 @@ def test_a_setpoint_is_refused_by_a_slice_that_cannot_take_one():
     )
     with pytest.raises(SliceError, match="did not finish start-up"):
         never_started.set_setpoint(1, 370)
+
+
+def test_setpoints_lost_with_no_trip_or_reboot_are_dropped_not_resumed():
+    # An e-stop pressed and released between two polls: the firmware zeroes
+    # the setpoints on the press, and GET_STATE never shows the flag.
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.5)
+    [changed] = events(seen, "slice-setpoints-changed")
+    assert changed.result == "safe state sent"
+    assert "ran 0 and 0 °C, not 40 and 0 °C" in changed.details
+    assert s.setpoints_deci == [0, 0]
+    # So a trip afterwards, found at the scheduled check, re-asserts nothing
+    # that heats.
+    rlht.trip()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert rlht.setpoints == [0, 0]
+
+
+def test_setpoints_a_trip_zeroed_are_re_asserted_at_the_next_poll():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.trip()  # zeroes the slice's setpoints, as watchdogLogic() does
+    tick(c, clock, 1.5)
+    # Checked at once, not at the fifth poll, and re-asserted.
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert not events(seen, "slice-setpoints-changed")
+    assert rlht.setpoints == [400, 0] and s.setpoints_deci == [400, 0]
+
+
+def test_a_setpoint_that_landed_although_its_send_failed_is_stopped():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.fail_after[SET_SETPOINTS] = OSError(errno.ETIMEDOUT, "Connection timed out")
+    with pytest.raises(SendFailed):
+        s.set_setpoint(1, 700)
+    del rlht.fail_after[SET_SETPOINTS]
+    assert rlht.setpoints == [700, 0] and s.setpoints_deci == [0, 0]
+    tick(c, clock, 1.5)
+    assert events(seen, "slice-setpoints-changed")
+    assert rlht.setpoints == [0, 0]
+
+
+def test_an_unprotected_slice_drops_changed_setpoints_without_a_check():
+    rlht = FakeRlht(caps=0x3F)
+    s, clock = started(rlht, device(allow_unprotected=True))
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 400)
+    rlht.setpoints = [0, 0]
+    tick(c, clock, 1.0)
+    assert events(seen, "slice-setpoints-changed")
+    assert rlht.watchdog_replies == 0
+
+
+def test_a_read_only_slice_running_its_own_setpoints_is_left_alone():
+    rlht = FakeRlht(caps=0x3F)
+    s, clock = started(rlht)
+    assert s.read_only
+    c, seen = controller_for(s, clock)
+    rlht.setpoints = [500, 0]  # set by something else
+    rlht.commands.clear()
+    tick(c, clock, 3.0)
+    assert not events(seen, "slice-setpoints-changed") and rlht.commands == []

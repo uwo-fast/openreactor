@@ -60,7 +60,9 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
 - RLHT setpoints from the API and the Controls page, in °C to a tenth of a
   degree, up to an optional per-channel `max_setpoint`; refused while the
   slice's e-stop is held, it is read-only or it is unreachable, and
-  recorded as an event.
+  recorded as an event. A slice found running other setpoints than wanted,
+  with no trip or reboot behind it, is sent its safe state.
+- `openreactor serve` prints each event as it happens, as `run` does.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.
