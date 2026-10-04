@@ -35,7 +35,8 @@ Changelog = "https://github.com/uwo-fast/openreactor/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28",
+    # Starlette's TestClient; plain httpx is deprecated there.
+    "httpx2>=2.13",
     "pyright>=1.1.400",
     "pytest>=8.0",
     "ruff>=0.14",
