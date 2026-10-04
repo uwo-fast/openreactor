@@ -176,7 +176,8 @@ class RlhtSlice:
         self._attempts = 0
         self._polls = 0
         self._failed_polls = 0
-        self._check_watchdog = False
+        self._check_owed = False
+        self._confirming = False
         self._trip_count = 0
         self._last_state: RlhtStateResult | None = None
         self.unreachable = False
@@ -261,10 +262,12 @@ class RlhtSlice:
         ]
 
     def _configure(self, state: RlhtStateResult, *, setpoints: bool = False) -> None:
-        """Closed-loop mode, thermocouple select, periods and gains: each only
-        if the slice can take it, and periods and gains only if the config
-        sets them. An output with no channel keeps the thermocouple and period
-        the slice has; gains go only when the config sets both outputs'."""
+        """In #24's order: closed-loop mode, the desired setpoints (with
+        ``setpoints``, for a re-assert; zero while an e-stop is held), periods,
+        thermocouple select, gains. Each only if the slice can take it, and
+        periods and gains only if the config sets them. An output with no
+        channel keeps the thermocouple and period the slice has; gains go only
+        when the config sets both outputs'."""
         flags = self.caps.flags if self.caps else 0
         by_output = {ch.output: ch for ch in self.device.channels}
 
@@ -298,28 +301,33 @@ class RlhtSlice:
     def send_safe(self) -> None:
         """Setpoints to zero, then open-loop duty to zero: both, always, even
         if the first fails or is interrupted. Open-loop duty does nothing in
-        closed loop; it stops a slice someone left in open loop."""
+        closed loop; it stops a slice someone left in open loop. The desired
+        setpoints go to zero too, so no later re-assert restarts heating."""
+        self.setpoints_deci = [0, 0]
         try:
             self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0))
         finally:
             self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
 
     # The poll: called each controller tick, never waits.
+    #
+    # Each poll slot runs one cycle: GET_STATE, and after every fifth good
+    # state poll (or when a check is owed) GET_WATCHDOG on the following
+    # tick. So a watchdog check never displaces a state poll, and any
+    # re-assert comes right after a GET_STATE that showed whether the slice
+    # is held by its e-stop. A failure ends the cycle; the next one waits for
+    # its slot.
 
     def advance(self, now: float) -> list[Result | Event]:
         """Do whatever is due at ``now``: stage a query, or read the one
         staged a tick ago. Returns readings and supervision events."""
         if self._phase is None:
-            due = self._check_watchdog or now >= self._next_poll
-            if not due:
+            if now < self._next_poll:
                 return []
-            if not self._check_watchdog:
-                self._next_poll += self.poll_s
-                if self._next_poll <= now:  # fell behind: skip to the next slot
-                    self._next_poll = now + self.poll_s
-            self._phase = "watchdog" if self._check_watchdog else "state"
-            self._attempts = 0
-            self._staged = False
+            self._next_poll += self.poll_s
+            if self._next_poll <= now:  # fell behind: skip to the next slot
+                self._next_poll = now + self.poll_s
+            self._begin("state")
         if not self._staged:
             return self._stage(now)
         if now < self._staged_at + QUERY_DELAY_S:
@@ -334,17 +342,26 @@ class RlhtSlice:
             )
         except (CrumbsError, OSError, ValueError) as e:
             return self._attempt_failed(e, now)
-        self._phase = None
-        out: list[Result | Event] = self._answered()
         if isinstance(parsed, BreadWatchdogResult):
-            self._check_watchdog = False
-            return out + self._supervise(parsed)
+            self._phase = None
+            return self._supervise(parsed)
         state = parsed
         self._last_state = state
+        out: list[Result | Event] = self._answered()
+        out += self._estop(state)
+        out += self._readings(state)
         self._polls += 1
-        if self.protected and self._polls % WATCHDOG_EVERY == 0:
-            self._check_watchdog = True
-        return out + self._estop(state) + self._readings(state)
+        if self.protected and (self._check_owed or self._polls % WATCHDOG_EVERY == 0):
+            self._check_owed = False
+            self._begin("watchdog")  # staged on the next tick
+        else:
+            self._phase = None
+        return out
+
+    def _begin(self, phase: str) -> None:
+        self._phase = phase
+        self._attempts = 0
+        self._staged = False
 
     def _stage(self, now: float) -> list[Result | Event]:
         opcode = BREAD_OP_GET_WATCHDOG if self._phase == "watchdog" else RLHT_OP_GET_STATE
@@ -357,13 +374,18 @@ class RlhtSlice:
         return []
 
     def _attempt_failed(self, e: BaseException, now: float) -> list[Result | Event]:
-        """A failed stage or read: retried within the poll, twice (#24),
-        staging again at once; after that, the poll has failed."""
+        """A failed stage or read: retried within the cycle, twice (#24);
+        after that the cycle ends, and the next waits for its slot."""
         self._attempts += 1
         if self._attempts < READS_PER_POLL:
             self._staged = False
             return self._stage(now) if isinstance(e, CrumbsError) else []
-        self._phase = None
+        phase, self._phase = self._phase, None
+        if phase == "watchdog":
+            # The slice answered GET_STATE this cycle: it is reachable. The
+            # check is owed, after the next cycle's state poll.
+            self._check_owed = True
+            return []
         return self._poll_failed(e)
 
     def _poll_failed(self, e: BaseException) -> list[Result | Event]:
@@ -388,15 +410,16 @@ class RlhtSlice:
         if not self.unreachable:
             return []
         self.unreachable = False
-        # It may have restarted while it did not answer: check at once.
-        self._check_watchdog = self.protected
+        # It may have restarted while it did not answer: check it now.
+        self._check_owed = self.protected
         return [Event(self._wall(), "system", "slice-reachable", device=self.name)]
 
     def _estop(self, state: RlhtStateResult) -> list[Result | Event]:
         held = bool(state.flags & RLHT_FLAG_ESTOP)
         if held and not self.estop:
             self.estop = True
-            # Nothing resumes after an e-stop until the operator says so.
+            # Nothing resumes after an e-stop until the operator says so;
+            # the stop-all this triggers clears the setpoints too.
             self.setpoints_deci = [0, 0]
             return [
                 Event(
@@ -427,26 +450,27 @@ class RlhtSlice:
 
     def _supervise(self, watchdog: BreadWatchdogResult) -> list[Result | Event]:
         """A trip or a reboot means the slice dropped what it was told:
-        re-assert it, then check again on the next tick."""
+        re-assert it once, and check it took in the next cycle."""
         baseline = self._trip_count
         self._trip_count = watchdog.trip_count
-        if not watchdog.armed or watchdog.trip_count < baseline:
+        confirming, self._confirming = self._confirming, False
+        if not watchdog.armed:
             what = "slice-reboot"
-            details = (
-                f"watchdog disarmed or trip count reset "
-                f"(armed={watchdog.armed}, trips {watchdog.trip_count})"
-            )
+            details = f"watchdog disarmed (trips {watchdog.trip_count})"
         elif watchdog.tripped or watchdog.trip_count != baseline:
+            # A count below the baseline with the watchdog armed is the u8
+            # counter wrapping, or a build that arms at boot: either way the
+            # slice dropped its state.
             what = "slice-trip"
             details = (
-                f"watchdog tripped "
-                f"(tripped={watchdog.tripped}, trips {baseline} -> {watchdog.trip_count})"
+                f"watchdog tripped (tripped={watchdog.tripped}, "
+                f"trips {baseline} -> {watchdog.trip_count})"
             )
         else:
             return []
-        try:
-            self._reassert()
-        except (CrumbsError, OSError, ValueError) as e:
+        if confirming:
+            # The last re-assert did not take. Say so, and wait for the next
+            # scheduled check rather than re-asserting at once.
             return [
                 Event(
                     self._wall(),
@@ -454,10 +478,24 @@ class RlhtSlice:
                     what,
                     device=self.name,
                     details=details,
-                    result=f"error: re-assert failed: {_describe(e)}",
+                    result="error: the re-assert did not take",
                 )
             ]
-        self._check_watchdog = True
+        try:
+            self._reassert()
+        except (CrumbsError, OSError, ValueError) as e:
+            # Keep the old baseline, so the next check sees the trip again
+            # and the re-assert is retried.
+            self._trip_count = baseline
+            self._check_owed = True
+            failure = f"error: re-assert failed: {_describe(e)}"
+            return [
+                Event(
+                    self._wall(), "system", what, device=self.name, details=details, result=failure
+                )
+            ]
+        self._confirming = True
+        self._check_owed = True
         return [
             Event(
                 self._wall(),
@@ -471,7 +509,8 @@ class RlhtSlice:
 
     def _reassert(self) -> None:
         """The desired state, in the order #24 gives: mode, setpoints,
-        periods, thermocouples, gains, then the watchdog armed again."""
+        periods, thermocouples, gains, then the watchdog armed again. Only
+        ever right after a GET_STATE, so a held e-stop is known."""
         if self.read_only or self._last_state is None:
             return
         self._configure(self._last_state, setpoints=True)

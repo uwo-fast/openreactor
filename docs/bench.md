@@ -151,9 +151,13 @@ Each one leaves an event in the run and shows in `/api/v1/status`.
    again, a `slice-trip` event with result `re-asserted`.
 4. **Re-assert after a power-cycle:** power-cycle the slice while openreactor
    runs. A `slice-reboot` event with result `re-asserted`, and GET_STATE shows
-   the configured mode and thermocouples again.
+   the configured mode and thermocouples again. This is for a default build,
+   which boots disarmed. A build with `RLHT_WATCHDOG_BOOT_MS` gives a
+   `slice-trip` instead, and only if it had tripped before (#53).
 5. **E-stop:** press the slice's e-stop. An `e-stop` event with result `held`,
    then stop-all; the relays stay off. Release it: an `e-stop` event with
    result `released`, and the setpoints stay at 0.
-6. **Unreachable:** unplug the slice. After 3 polls, `/api/v1/status` shows it
-   unreachable; plug it back in and it answers again.
+6. **Unreachable:** disconnect the slice's I2C. After 3 failed polls, a
+   `slice-unreachable` event, and `/api/v1/status` shows it unreachable.
+   Reconnect it: a `slice-reachable` event, and the watchdog is checked at
+   once, so a slice that lost power meanwhile also gives step 4's event.

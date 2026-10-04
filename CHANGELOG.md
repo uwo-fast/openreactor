@@ -51,9 +51,9 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   reports each channel's temperature, setpoint and duty. Stop-all sends both
   stop ops to every slice.
 - RLHT supervision: GET_WATCHDOG after every fifth poll detects a trip
-  (tripped, or a changed trip count) or a reboot (disarmed, or the count
-  reset) and re-asserts the desired state; a slice e-stop sends stop-all and
-  nothing resumes; a failed read is retried twice per poll, and 3 failed polls
+  (tripped, or a changed trip count) or a reboot (disarmed) and re-asserts
+  the desired state, checked at the next poll; a slice e-stop or stop-all
+  zeroes the setpoints and nothing resumes; a failed read is retried twice per poll, and 3 failed polls
   mark the slice unreachable. Each is an event in the run and shows in
   `/status`.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per

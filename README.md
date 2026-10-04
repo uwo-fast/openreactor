@@ -83,13 +83,18 @@ the slice's outputs, since the slice takes both at once; nothing is filled in. A
 read-only unless its config sets `allow_unprotected = true`. Each slice is then
 polled every `slice_poll_s`, which also keeps its watchdog fed, and its
 channels' temperature, setpoint and duty are read and recorded like any
-sensor. Every fifth poll also reads the slice's watchdog: a trip, or a reboot
-(the watchdog disarmed, or its trip count reset), is logged and the desired
-state is sent again: mode, setpoints, periods, thermocouples, gains, and the
-watchdog armed. A failed read is retried twice in the same poll; after 3 failed
+sensor. Every fifth poll also reads the slice's watchdog. A reboot (the
+watchdog disarmed) or a trip (tripped, or a changed trip count) is logged, and
+the desired state is sent again: mode, setpoints, periods, thermocouples, gains,
+and the watchdog armed. The next poll checks that it took; if it did not, that
+is logged and it is sent again at the next scheduled check, and if sending
+failed, at the next poll. A slice built with `RLHT_WATCHDOG_BOOT_MS` arms its
+watchdog at boot, so its reboot is seen only if it had tripped before (#53).
+A failed read is retried twice in the same poll; after 3 failed
 polls in a row the slice shows as unreachable until it answers again. An e-stop
 pressed on a slice sends stop-all, and its setpoints stay at zero until the
-operator sets them again. Stop-all sends every slice its safe state. Until feastorg/Slice_RLHT#13
+operator sets them again. Stop-all sends every slice its safe state, and its
+setpoints stay at zero the same way. Until feastorg/Slice_RLHT#13
 is fixed, that does not turn a running heater off at once: the slice keeps its
 PID integral, so the output decays to off over seconds (#51). Setpoints on slices come
 next (#24).

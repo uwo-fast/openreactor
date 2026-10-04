@@ -186,6 +186,9 @@ class FakeRlht:
             self.staged = message.data[0]
             return
         self.commands.append((message.opcode, bytes(message.data)))
+        # As the firmware does (feastorg/Slice_RLHT#9): any command frame
+        # clears a trip; SET_REPLY does not.
+        self.tripped = 0
         op, data = message.opcode, message.data
         if op == 0x7E and self.arms:  # SET_WATCHDOG
             self.timeout_ms = int.from_bytes(data[:2], "little")
@@ -200,6 +203,22 @@ class FakeRlht:
             self.periods = [int.from_bytes(data[i : i + 2], "little") for i in (0, 2)]
         elif op == 0x05:
             self.tc = [data[0], data[1]]
+
+    def trip(self) -> None:
+        """The command watchdog expiring, as watchdogLogic() does it."""
+        self.tripped = 1
+        self.trip_count = (self.trip_count + 1) % 256
+        self.setpoints = [0, 0]
+
+    def reboot(self) -> None:
+        """A power-cycle: the watchdog boots disarmed and its count at 0."""
+        self.armed = 0
+        self.timeout_ms = 0
+        self.tripped = 0
+        self.trip_count = 0
+        self.setpoints = [0, 0]
+        self.mode = 0
+        self.tc = [1, 2]
 
     def reply(self) -> bytes:
         import struct

@@ -7,7 +7,7 @@ from fakes import FakeActuator, FakeClock, FakeI2cBus, FakeRlht
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Controller
 from openreactor.ezo import EzoReader, Outcome, Result
-from openreactor.rlht import CrumbsPort, RlhtSlice, SliceError, opened_slices
+from openreactor.rlht import READS_PER_POLL, CrumbsPort, RlhtSlice, SliceError, opened_slices
 
 SET_SETPOINTS, SET_OPEN_DUTY, SET_MODE, SET_PID, SET_PERIODS, SET_TC = (
     0x02,
@@ -463,21 +463,107 @@ def test_a_tripped_flag_is_a_trip():
     assert events(seen, "slice-trip")
 
 
-@pytest.mark.parametrize("reboot", ["disarmed", "count reset"])
-def test_a_reboot_is_detected_and_re_asserted(reboot: str):
+def test_a_reboot_is_re_asserted_once_and_the_state_polls_go_on():
     rlht = FakeRlht()
-    rlht.trip_count = 4
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
-    if reboot == "disarmed":
-        rlht.armed = 0
-    else:
-        rlht.trip_count = 0
+    s.setpoints_deci = [370, 0]
+    rlht.reboot()
     rlht.commands.clear()
-    tick(c, clock, 6.0)
+    polls = rlht.state_replies
+    tick(c, clock, 10.0)
     [event] = events(seen, "slice-reboot")
     assert event.result == "re-asserted"
-    assert SET_WATCHDOG in ops(rlht) and rlht.armed == 1
+    assert ops(rlht).count(SET_WATCHDOG) == 1 and rlht.armed == 1
+    assert rlht.setpoints == [370, 0]
+    # A poll every second throughout: the re-assert never pre-empts one.
+    assert rlht.state_replies - polls >= 9
+
+
+def test_a_count_below_the_baseline_while_armed_is_a_trip():
+    # The u8 counter wrapping, or a build that arms its watchdog at boot.
+    rlht = FakeRlht()
+    rlht.trip_count = 255
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.trip()
+    rlht.tripped = 0  # cleared since by a command (feastorg/Slice_RLHT#9)
+    assert rlht.trip_count == 0
+    tick(c, clock, 6.0)
+    [trip] = events(seen, "slice-trip")
+    assert trip.result == "re-asserted" and "trips 255 -> 0" in trip.details
+    assert not events(seen, "slice-reboot")
+
+
+def test_a_re_assert_that_does_not_take_is_reported_and_not_repeated_each_tick():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.reboot()
+    rlht.arms = False  # it ignores SET_WATCHDOG from now on
+    rlht.commands.clear()
+    polls = rlht.state_replies
+    tick(c, clock, 10.0)
+    reboots = events(seen, "slice-reboot")
+    assert reboots[0].result == "re-asserted"
+    assert reboots[1].result == "error: the re-assert did not take"
+    # Re-asserted at most once per scheduled check, never every tick.
+    assert ops(rlht).count(SET_WATCHDOG) <= 3
+    assert rlht.state_replies - polls >= 9
+    # An e-stop is still seen while it goes on.
+    rlht.flags = 0x01
+    tick(c, clock, 2.0)
+    assert [e.result for e in events(seen, "e-stop")] == ["held"]
+
+
+def test_a_failed_re_assert_is_retried_at_the_next_check():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    rlht.trip()
+    # SET_MODE goes through and clears the trip flag (feastorg/Slice_RLHT#9);
+    # SET_SETPOINTS fails, so only the count still shows the trip.
+    rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EREMOTEIO, "Remote I/O error")
+    tick(c, clock, 6.0)
+    # Found at the fifth poll, and retried at the next one, not each tick.
+    failed = events(seen, "slice-trip")
+    assert len(failed) == 2
+    assert all(e.result.startswith("error: re-assert failed") for e in failed)
+    del rlht.fail_opcodes[SET_SETPOINTS]
+    rlht.commands.clear()
+    tick(c, clock, 2.0)
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert SET_WATCHDOG in ops(rlht)
+
+
+def test_a_trip_after_stop_all_does_not_restart_heating():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.setpoints_deci = [370, 0]
+    c.stop_all()
+    tick(c, clock, 0.2)
+    assert s.setpoints_deci == [0, 0]
+    rlht.trip()
+    rlht.commands.clear()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
+    assert all(
+        payload == struct.pack("<hh", 0, 0) for op, payload in rlht.commands if op == SET_SETPOINTS
+    )
+
+
+def test_a_silent_slice_is_asked_three_times_a_poll_and_goes_unreachable():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    tick(c, clock, 4.5)  # just before a watchdog check is due
+    rlht.faults = [OSError(errno.EREMOTEIO, "Remote I/O error")] * 1000
+    tick(c, clock, 5.0)
+    asked = 1000 - len(rlht.faults)
+    assert asked <= READS_PER_POLL * 6
+    [down] = events(seen, "slice-unreachable")
+    assert s.unreachable
 
 
 def test_a_slice_without_a_watchdog_is_never_checked():
