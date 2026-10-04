@@ -89,8 +89,9 @@ then the recording run is ended and the circuits are closed.
   from `openreactor hash-password`. A browser signs in with
   `POST /login` and gets a session cookie, which lasts until `POST /logout`,
   12 hours, or a server restart. A script sends
-  `Authorization: Bearer <password>`. One password check runs at a time; a
-  guess made while another is being checked gets 429.
+  `Authorization: Bearer <password>`. One password check runs at a time, and
+  each client address has at most one in hand: a second guess from the same
+  address gets 429 at once, and others wait up to 2 seconds for their turn.
 - A request that changes something is refused if its `Origin` names another
   site; a signed-in browser request must carry one.
 - The OpenAPI description is at `/api/v1/openapi.json`, behind the same

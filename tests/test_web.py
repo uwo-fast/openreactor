@@ -471,14 +471,54 @@ def test_a_large_body_is_refused_before_it_is_read(locked_bench):
     assert client.post("/login", json={"password": PASSWORD}).status_code == 204
 
 
-def test_a_guess_during_another_check_is_refused_not_queued(monkeypatch):
+def test_one_guessing_client_cannot_lock_out_another(monkeypatch):
     import threading
 
     from openreactor import web
     from openreactor.web import Busy, Gate
 
     gate = Gate(HASH)
-    assert gate.check(PASSWORD)
+    real = web.verify_password
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_verify(password: str, stored: str) -> bool:
+        if password == "wrong":
+            entered.set()
+            release.wait(5)
+            return False
+        return real(password, stored)
+
+    monkeypatch.setattr(web, "verify_password", slow_verify)
+    guess = threading.Thread(target=lambda: gate.check("wrong", "10.0.0.66"))
+    guess.start()
+    assert entered.wait(5)
+    # The guessing host gets no second check in hand, nor a wait for one.
+    started = time.monotonic()
+    with pytest.raises(Busy):
+        gate.check("also wrong", "10.0.0.66")
+    assert time.monotonic() - started < 0.5
+    # Another host waits its turn instead of being turned away.
+    results: list[bool] = []
+    user = threading.Thread(target=lambda: results.append(gate.check(PASSWORD, "10.0.0.7")))
+    user.start()
+    time.sleep(0.2)
+    assert results == []
+    release.set()
+    user.join(5)
+    guess.join(5)
+    assert results == [True]
+    # Once verified, the password is let in without waiting.
+    assert gate.check(PASSWORD, "10.0.0.66")
+
+
+def test_a_check_that_stays_busy_gives_up(monkeypatch):
+    import threading
+
+    from openreactor import web
+    from openreactor.web import Busy, Gate
+
+    monkeypatch.setattr(web, "CHECK_WAIT_S", 0.1)
+    gate = Gate(HASH)
     entered, release = threading.Event(), threading.Event()
 
     def slow_verify(password: str, stored: str) -> bool:
@@ -487,15 +527,13 @@ def test_a_guess_during_another_check_is_refused_not_queued(monkeypatch):
         return False
 
     monkeypatch.setattr(web, "verify_password", slow_verify)
-    guess = threading.Thread(target=lambda: gate.check("wrong"))
+    guess = threading.Thread(target=lambda: gate.check("wrong", "a"))
     guess.start()
     assert entered.wait(5)
     with pytest.raises(Busy):
-        gate.check("also wrong")
-    # The known password is still let in at once.
-    assert gate.check(PASSWORD)
+        gate.check(PASSWORD, "b")
     release.set()
-    guess.join()
+    guess.join(5)
 
 
 def test_a_busy_gate_answers_429(locked_bench, monkeypatch):
@@ -503,7 +541,7 @@ def test_a_busy_gate_answers_429(locked_bench, monkeypatch):
 
     bench, client = locked_bench
 
-    def busy(password: str) -> bool:
+    def busy(password: str, client: str = "") -> bool:
         raise Busy
 
     monkeypatch.setattr(bench.app.state.gate, "check", busy)

@@ -93,6 +93,8 @@ def run_server(app: FastAPI, host: str, port: int) -> None:
                 stop_now()
             super().handle_exit(sig, frame)
 
+    shown = f"[{host}]" if ":" in host else host
+    print(f"serving on http://{shown}:{port}; Ctrl-C to stop", file=sys.stderr, flush=True)
     config = uvicorn.Config(app, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
     with sock:
         Server(config).run(sockets=[sock])

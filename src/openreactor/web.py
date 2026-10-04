@@ -56,6 +56,8 @@ SESSION_MAX_AGE_S = 12 * 60 * 60
 # No request body here is more than a few hundred bytes; anything far
 # larger is refused before it is read, signed in or not.
 MAX_BODY_BYTES = 64 * 1024
+# How long a password check may wait for another client's to finish.
+CHECK_WAIT_S = 2.0
 
 
 class LoopbackHostsOnly:
@@ -162,14 +164,17 @@ class Gate:
     """Checks the shared password and keeps the signed-in sessions.
 
     One scrypt check runs at a time: each costs 32 MiB, and a burst of
-    wrong guesses must not add up to more. A guess that arrives while one
-    runs is refused (429) instead of queued, so guesses never hold the
-    request threads that stop-all needs, and a password already verified
-    is compared directly without the lock."""
+    wrong guesses must not add up to more. Each client address has at most
+    one check running or waiting; another from the same address is refused
+    (429) at once. Others wait up to CHECK_WAIT_S for their turn, so one
+    guessing host cannot hold the check and lock everyone else out, and a
+    password already verified is compared directly without waiting."""
 
     def __init__(self, password_hash: str | None):
         self.password_hash = password_hash
         self._lock = threading.Lock()
+        self._clients_lock = threading.Lock()
+        self._clients: set[str] = set()
         self._known: bytes | None = None
         # Session ids signed in since the server started; signing out
         # removes one, so a copied cookie stops working.
@@ -179,23 +184,32 @@ class Gate:
     def open(self) -> bool:
         return self.password_hash is None
 
-    def check(self, password: str) -> bool:
-        """Raises Busy if another check is running."""
+    def check(self, password: str, client: str = "") -> bool:
+        """Raises Busy if ``client`` already has a check in hand, or if the
+        check stays busy for CHECK_WAIT_S."""
         if self.password_hash is None:
             return True
         given = password.encode()
         known = self._known
         if known is not None and hmac.compare_digest(given, known):
             return True
-        if not self._lock.acquire(blocking=False):
-            raise Busy
+        with self._clients_lock:
+            if client in self._clients:
+                raise Busy
+            self._clients.add(client)
         try:
-            if verify_password(password, self.password_hash):
-                self._known = given
-                return True
-            return False
+            if not self._lock.acquire(timeout=CHECK_WAIT_S):
+                raise Busy
+            try:
+                if verify_password(password, self.password_hash):
+                    self._known = given
+                    return True
+                return False
+            finally:
+                self._lock.release()
         finally:
-            self._lock.release()
+            with self._clients_lock:
+                self._clients.discard(client)
 
     def sign_in(self) -> str:
         session = secrets.token_urlsafe(32)
@@ -225,6 +239,10 @@ def _same_origin(request: Request, origin: str) -> bool:
 
 def _forbidden(detail: str) -> HTTPException:
     return HTTPException(status_code=403, detail=detail)
+
+
+def _client(request: Request) -> str:
+    return request.client.host if request.client else ""
 
 
 def _busy() -> HTTPException:
@@ -259,7 +277,7 @@ def authorize(request: Request) -> None:
         # A script: the password itself, no ambient credential, so no
         # Origin rule is needed.
         try:
-            ok = gate.check(token)
+            ok = gate.check(token, _client(request))
         except Busy:
             raise _busy() from None
         if not ok:
@@ -492,7 +510,7 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
         gate: Gate = app.state.gate
         # scrypt is slow on purpose; keep it off the event loop.
         try:
-            ok = await run_in_threadpool(gate.check, password)
+            ok = await run_in_threadpool(gate.check, password, _client(request))
         except Busy:
             raise _busy() from None
         if not ok:
