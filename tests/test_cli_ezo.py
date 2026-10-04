@@ -1,7 +1,11 @@
+import csv
 import getpass
+import io
+import json
 import os
 import signal
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -325,3 +329,84 @@ def test_follow_stops_quietly_when_its_reader_goes_away(
 def test_once_and_follow_are_exclusive(config: str, ports, capsys):
     with pytest.raises(SystemExit):
         cli.main(["read", "--once", "--follow", "-c", config])
+
+
+@pytest.fixture
+def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    return tmp_path / "xdg" / "openreactor" / "openreactor.db"
+
+
+def stop_after(seconds: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = cli.clock
+    assert isinstance(clock, FakeClock)
+
+    def sleep(s: float) -> None:
+        clock.sleep(s)
+        if clock.now > seconds:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "sleep", sleep)
+
+
+def test_run_records_until_stopped_and_exports(
+    config: str, ports, database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    monkeypatch.setattr(cli, "actuators", lambda c: [FakeActuator("heater")])
+    stop_after(5.0, monkeypatch)
+
+    assert cli.main(["run", "-c", config, "--name", "brew", "--notes", "first"]) == 0
+    err = capsys.readouterr().err
+    assert "run 1 (brew): recording" in err and "run 1: stopped" in err
+
+    assert cli.main(["runs", "-c", config]) == 0
+    assert capsys.readouterr().out.split()[:2] == ["1", "stopped"]
+
+    out = tmp_path / "brew.zip"
+    assert cli.main(["export", "-c", config, "1", "-o", str(out)]) == 0
+    with zipfile.ZipFile(out) as z:
+        readings = list(csv.reader(io.StringIO(z.read("readings.csv").decode())))
+        events = z.read("events.csv").decode()
+        meta = json.loads(z.read("run.json"))
+    channels = {row[1] for row in readings[1:]}
+    assert channels == {"vessel_temp", "ph", "do.mg_l", "do.saturation"}
+    assert "stop-all,heater,,,ok" in events  # stop-all is part of the run
+    assert meta["status"] == "stopped" and meta["notes"] == "first"
+    assert meta["config"] == Path(config).read_text()
+
+
+def test_a_run_left_running_is_marked_interrupted_by_the_next(
+    config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    from openreactor.storage import Store
+
+    store = Store(database)
+    stale = store.start_run("crashed", "c")
+    store.close()
+    stop_after(5.0, monkeypatch)  # after the 1.8 s startup check
+
+    assert cli.main(["run", "-c", config, "--name", "next"]) == 0
+    assert f"run {stale} was left running; marked interrupted" in capsys.readouterr().err
+    store = Store(database)
+    assert [r.status for r in store.runs()] == ["interrupted", "stopped"]
+    store.close()
+
+
+def test_run_does_not_touch_the_database_while_another_controller_runs(
+    config: str, ports, database: Path, lock: Path
+):
+    from openreactor.storage import Store
+
+    store = Store(database)
+    live = store.start_run("live", "c")
+    store.close()
+    with ControllerLock(lock):
+        assert cli.main(["run", "-c", config, "--name", "second"]) == 1
+    store = Store(database)
+    assert [(r.id, r.status) for r in store.runs()] == [(live, "running")]
+    store.close()
+
+
+def test_export_of_an_unknown_run_fails_cleanly(config: str, database: Path, capsys):
+    assert cli.main(["export", "-c", config, "9"]) == 1
+    assert "there is no run 9" in capsys.readouterr().err

@@ -61,10 +61,19 @@ the circuit.
 openreactor check-config FILE        # validate a config file
 openreactor read                     # read every EZO sensor once
 openreactor read --follow            # read them every ezo_period_s until Ctrl-C
+openreactor run --name brew          # record a run until Ctrl-C
+openreactor runs                     # list recorded runs
+openreactor export 3                 # write run 3 as run-3.zip
 openreactor ezo cal ph status        # show a circuit's calibration
 openreactor ezo cal ph mid 7.00      # calibrate a point
 openreactor ezo cal ph clear --yes   # erase a circuit's calibration
 ```
+
+A run records every reading and event (stop-all, failed reads) in SQLite, at
+`storage.database`, by default `~/.local/state/openreactor/openreactor.db`. An
+export is a zip of `readings.csv`, `events.csv` and `run.json`, with the run's
+config. If the database fails mid-run (a full disk, say), recording stops and
+the run is marked interrupted; control and stop-all carry on.
 
 Calibration points by family:
 

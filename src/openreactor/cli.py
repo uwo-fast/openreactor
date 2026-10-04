@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sqlite3
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from types import FrameType
 
 from openreactor import __version__
@@ -27,6 +30,7 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
+from openreactor.storage import Recorder, StorageError, Store, default_path
 
 DEFAULT_CONFIG = "/etc/openreactor/openreactor.toml"
 
@@ -156,6 +160,9 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
         except BrokenPipeError:
             # The reader of our output went away (read --follow | head).
             return 0
+        except (StorageError, sqlite3.Error) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         except OSError as e:
             where = f"{e.filename}: " if e.filename else ""
             print(f"error: {where}{e.strerror or e}", file=sys.stderr)
@@ -171,33 +178,128 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
     return command
 
 
-def _read(args: argparse.Namespace, config: Config) -> int:
+def _follow(controller: Controller) -> None:
+    """Print what the controller publishes until Ctrl-C, SIGTERM, or the
+    reader of the output going away."""
+    closed = False
+
+    def show(item: Result | Event) -> None:
+        nonlocal closed
+        try:
+            _print(item)
+        except BrokenPipeError:
+            # The reader went away (read --follow | head): stop, and send
+            # what is left, the stop-all report, nowhere.
+            closed = True
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+    controller.subscribe(show)
+    controller.run(lambda: closed)
+
+
+def _ezo_devices(args: argparse.Namespace, config: Config) -> list[DeviceConfig] | None:
     devices = [d for d in config.devices if d.kind in FAMILIES]
     skipped = [d.name for d in config.devices if d.kind not in FAMILIES]
     if not devices:
         print(f"error: {args.config} lists no EZO devices", file=sys.stderr)
-        return 1
+        return None
     if skipped:
         print(f"note: not reading {', '.join(skipped)}: slices are not read yet", file=sys.stderr)
+    return devices
+
+
+def _store(config: Config) -> Store:
+    path = Path(config.storage.database) if config.storage.database else default_path()
+    return Store(path)
+
+
+def _run(args: argparse.Namespace, config: Config) -> int:
+    devices = _ezo_devices(args, config)
+    if devices is None:
+        return 1
+    config_text = Path(args.config).read_text()
+    with _controller(config, devices, auto_read=True) as (controller, problems):
+        # Only now, holding the controller lock, is no other run live: a run
+        # still marked running was left by a process that died.
+        store = _store(config)
+        try:
+            for stale in store.interrupt_stale_runs():
+                print(f"note: run {stale} was left running; marked interrupted", file=sys.stderr)
+            run = store.start_run(args.name, config_text, args.notes)
+            names = {d.name: (d.name, d.kind) for d in devices}
+            recorder = Recorder(store, run, names)
+            for problem in problems:
+                _print(problem)
+                recorder(problem)
+            print(
+                f"run {run} ({args.name}): recording; Ctrl-C to stop", file=sys.stderr, flush=True
+            )
+            controller.subscribe(recorder)
+            try:
+                _follow(controller)
+            finally:
+                # Stop-all first, so its events are part of the run.
+                controller.close()
+                if recorder.failed is None:
+                    store.end_run(run, "stopped")
+                    print(f"run {run}: stopped", file=sys.stderr)
+                else:
+                    print(f"run {run}: interrupted ({recorder.failed})", file=sys.stderr)
+        finally:
+            store.close()
+    return 0
+
+
+def _runs(args: argparse.Namespace) -> int:
+    config = _load(args.config)
+    if config is None:
+        return 1
+    try:
+        store = _store(config)
+    except (OSError, sqlite3.Error, StorageError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
+        for r in store.runs():
+            ended = _when(r.ended) if r.ended else "-"
+            print(f"{r.id:>4}  {r.status:<11}  {_when(r.started)}  {ended:<19}  {r.name}")
+    finally:
+        store.close()
+    return 0
+
+
+def _export(args: argparse.Namespace) -> int:
+    config = _load(args.config)
+    if config is None:
+        return 1
+    destination = Path(args.output or f"run-{args.run}.zip")
+    try:
+        store = _store(config)
+        try:
+            store.export(args.run, destination)
+        finally:
+            store.close()
+    except (OSError, sqlite3.Error, StorageError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(destination)
+    return 0
+
+
+def _when(t: float) -> str:
+    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _read(args: argparse.Namespace, config: Config) -> int:
+    devices = _ezo_devices(args, config)
+    if devices is None:
+        return 1
 
     with _controller(config, devices, auto_read=args.follow) as (controller, problems):
         for problem in problems:
             _print(problem)
         if args.follow:
-            closed = False
-
-            def show(item: Result | Event) -> None:
-                nonlocal closed
-                try:
-                    _print(item)
-                except BrokenPipeError:
-                    # The reader went away (read --follow | head): stop, and
-                    # send what is left, the stop-all report, nowhere.
-                    closed = True
-                    os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-
-            controller.subscribe(show)
-            controller.run(lambda: closed)
+            _follow(controller)
             return 0
         results = controller.read_once()
         for result in results:
@@ -278,6 +380,22 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--once", action="store_true", help="read every sensor once (default)")
     mode.add_argument("--follow", action="store_true", help="read every ezo_period_s until Ctrl-C")
     reading.set_defaults(func=_device_command(_read))
+
+    recording = commands.add_parser("run", help="record a run until Ctrl-C")
+    recording.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
+    recording.add_argument("--name", required=True, help="a name for the run")
+    recording.add_argument("--notes", default="", help="free-text notes stored with the run")
+    recording.set_defaults(func=_device_command(_run), follow=True)
+
+    listing = commands.add_parser("runs", help="list recorded runs")
+    listing.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
+    listing.set_defaults(func=_runs)
+
+    exporting = commands.add_parser("export", help="export a run as a zip of CSV files")
+    exporting.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
+    exporting.add_argument("run", type=int, help="the run's number, from openreactor runs")
+    exporting.add_argument("-o", "--output", help="the zip file to write (default run-N.zip)")
+    exporting.set_defaults(func=_export)
 
     ezo = commands.add_parser("ezo", help="EZO circuit tools")
     ezo_commands = ezo.add_subparsers(dest="ezo_command", required=True, metavar="COMMAND")
