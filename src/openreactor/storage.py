@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -50,7 +51,9 @@ CREATE TABLE readings (
     run INTEGER NOT NULL REFERENCES runs (id),
     channel TEXT NOT NULL REFERENCES channels (name),
     time REAL NOT NULL,
-    value REAL NOT NULL
+    value REAL NOT NULL,
+    -- The unit as read: a channel name can be reused later with another unit.
+    unit TEXT NOT NULL
 );
 CREATE INDEX readings_by_run ON readings (run, time);
 CREATE TABLE events (
@@ -97,32 +100,102 @@ class Run:
 
 
 def _iso(t: float | None) -> str:
-    return "" if t is None else datetime.fromtimestamp(t, UTC).isoformat()
+    if t is None:
+        return ""
+    return datetime.fromtimestamp(t, UTC).isoformat(timespec="milliseconds")
+
+
+# How long a write from the controller's tick may wait for a database lock
+# (someone browsing the file, say) before it counts as a failed write. The
+# tick must not stall; 50 ms is half a tick.
+WRITE_WAIT_S = 0.05
+
+# Opening and starting or ending a run happen outside the tick, and may wait.
+SETUP_WAIT_S = 5.0
 
 
 class Store:
-    """One SQLite database in WAL mode."""
+    """One SQLite database in WAL mode. ``read_only`` opens an existing
+    database for listing and export, without creating or changing it."""
 
-    def __init__(self, path: Path, wall: Callable[[], float] = time.time):
+    def __init__(
+        self, path: Path, wall: Callable[[], float] = time.time, *, read_only: bool = False
+    ):
+        self.path = path
+        self._wall = wall
+        if read_only:
+            if not path.exists():
+                raise StorageError(f"{path} does not exist: no runs have been recorded")
+            self._db = self._open_read_only(path)
+            self._check_version(self._db.execute("PRAGMA user_version").fetchone()[0])
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False: the CLI opens it, the controller's thread
         # (the only writer) uses it.
-        self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self._wall = wall
-        self._db.execute("PRAGMA journal_mode = WAL")
-        self._db.execute("PRAGMA synchronous = NORMAL")
-        self._db.execute("PRAGMA foreign_keys = ON")
-        version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
-            # One script, so the tables and the version are written together.
-            self._db.executescript(
-                f"BEGIN;\n{_SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
-            )
-        elif version != SCHEMA_VERSION:
+        self._db = sqlite3.connect(
+            path, check_same_thread=False, isolation_level=None, timeout=SETUP_WAIT_S
+        )
+        try:
+            self._db.execute("PRAGMA synchronous = NORMAL")
+            self._db.execute("PRAGMA foreign_keys = ON")
+            # Take the write lock before reading the version, so two first
+            # opens cannot both create the schema.
+            self._db.execute("BEGIN IMMEDIATE")
+            version = self._db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                for statement in _SCHEMA.split(";"):
+                    if statement.strip():
+                        self._db.execute(statement)
+                self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._db.execute("COMMIT")
+            self._check_version(version or SCHEMA_VERSION)
+            self._use_wal()
+        except BaseException:
+            self._db.close()
+            raise
+
+    def _use_wal(self) -> None:
+        # Switching to WAL needs a moment of exclusive access, which another
+        # process opening the file at the same time can hold; the busy
+        # handler does not cover it, so retry briefly. Once a database is in
+        # WAL mode it stays so, and this is a no-op.
+        deadline = time.monotonic() + SETUP_WAIT_S
+        while True:
+            try:
+                self._db.execute("PRAGMA journal_mode = WAL")
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) or time.monotonic() > deadline:
+                    raise
+                time.sleep(0.01)
+
+    @staticmethod
+    def _open_read_only(path: Path) -> sqlite3.Connection:
+        uri = f"file:{path}?mode=ro"
+        db = sqlite3.connect(uri, uri=True, timeout=SETUP_WAIT_S, isolation_level=None)
+        try:
+            db.execute("PRAGMA user_version").fetchone()
+            return db
+        except sqlite3.OperationalError as e:
+            db.close()
+            if "readonly" not in str(e):
+                raise
+        # A WAL database can only be read through its -shm file, which this
+        # user cannot create here. The file is absent only when no process
+        # has the database open, so nothing is writing it and it can be read
+        # as immutable.
+        uri = f"file:{path}?mode=ro&immutable=1"
+        return sqlite3.connect(uri, uri=True, isolation_level=None)
+
+    def _check_version(self, version: int) -> None:
+        if version != SCHEMA_VERSION:
             self._db.close()
             raise StorageError(
-                f"{path} has schema version {version}; this openreactor uses {SCHEMA_VERSION}"
+                f"{self.path} has schema version {version}; this openreactor uses {SCHEMA_VERSION}"
             )
+
+    def _wait(self, seconds: float) -> None:
+        self._db.execute(f"PRAGMA busy_timeout = {int(seconds * 1000)}")
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -130,7 +203,10 @@ class Store:
         try:
             yield
         except BaseException:
-            self._db.execute("ROLLBACK")
+            # SQLite has already rolled back after some errors (a full
+            # disk); rolling back again would replace the real error.
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
             raise
         self._db.execute("COMMIT")
 
@@ -180,20 +256,31 @@ class Store:
 
     # Readings and events
 
-    def add_reading(
-        self, run: int, channel: str, device: str, kind: str, unit: str, at: float, value: float
+    def recording(self) -> None:
+        """From here on, writes come from the controller's tick: a write
+        that cannot get the database lock quickly fails instead of waiting."""
+        self._wait(WRITE_WAIT_S)
+
+    def setup(self) -> None:
+        """Back to waiting patiently, for starting or ending a run."""
+        self._wait(SETUP_WAIT_S)
+
+    def add_readings(
+        self, run: int, device: str, kind: str, at: float, values: list[tuple[str, str, float]]
     ) -> None:
+        """All of one reading's ``(channel, unit, value)`` outputs, or none."""
         with self._transaction():
-            self._db.execute(
-                "INSERT INTO channels (name, device, kind, unit) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT (name) DO UPDATE SET device = excluded.device, "
-                "kind = excluded.kind, unit = excluded.unit",
-                (channel, device, kind, unit),
-            )
-            self._db.execute(
-                "INSERT INTO readings (run, channel, time, value) VALUES (?, ?, ?, ?)",
-                (run, channel, at, value),
-            )
+            for channel, unit, value in values:
+                self._db.execute(
+                    "INSERT INTO channels (name, device, kind, unit) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT (name) DO UPDATE SET device = excluded.device, "
+                    "kind = excluded.kind, unit = excluded.unit",
+                    (channel, device, kind, unit),
+                )
+                self._db.execute(
+                    "INSERT INTO readings (run, channel, time, value, unit) VALUES (?, ?, ?, ?, ?)",
+                    (run, channel, at, value, unit),
+                )
 
     def add_event(self, run: int | None, event: Event) -> None:
         self._db.execute(
@@ -229,8 +316,7 @@ class Store:
         writer = csv.writer(readings, lineterminator="\n")
         writer.writerow(["time", "channel", "value", "unit"])
         for at, channel, value, unit in self._db.execute(
-            "SELECT r.time, r.channel, r.value, c.unit FROM readings r "
-            "JOIN channels c ON c.name = r.channel WHERE r.run = ? ORDER BY r.time, r.rowid",
+            "SELECT time, channel, value, unit FROM readings WHERE run = ? ORDER BY time, rowid",
             (run,),
         ):
             writer.writerow([_iso(at), channel, repr(value), unit])
@@ -255,7 +341,8 @@ class Store:
             "config": config,
             "profile": profile,
         }
-        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as z:
+        # "x": never overwrite an earlier export.
+        with zipfile.ZipFile(destination, "x", zipfile.ZIP_DEFLATED) as z:
             z.writestr("readings.csv", readings.getvalue())
             z.writestr("events.csv", events.getvalue())
             z.writestr("run.json", json.dumps(meta, indent=2) + "\n")
@@ -302,9 +389,25 @@ class Recorder:
             else:
                 device, kind = self._devices.get(item.channel, (item.channel, ""))
                 at = self._wall()
+                values: list[tuple[str, str, float]] = []
                 for v in item.values:
                     channel = f"{item.channel}.{v.field}" if v.field else item.channel
-                    self.store.add_reading(self.run, channel, device, kind, v.unit, at, v.value)
+                    if math.isfinite(v.value):
+                        values.append((channel, v.unit, v.value))
+                    else:
+                        # Not a number SQLite can store; keep the fact.
+                        bad = Event(
+                            at,
+                            "system",
+                            "read",
+                            device=device,
+                            channel=channel,
+                            details=f"non-finite value {v.value}",
+                            result="error",
+                        )
+                        self.store.add_event(self.run, bad)
+                if values:
+                    self.store.add_readings(self.run, device, kind, at, values)
         except sqlite3.Error as e:
             # Recording stops; control does not. The run is marked
             # interrupted if the database still accepts that much.

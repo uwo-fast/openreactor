@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import sqlite3
 import sys
 import zipfile
 from pathlib import Path
@@ -409,4 +410,38 @@ def test_run_does_not_touch_the_database_while_another_controller_runs(
 
 def test_export_of_an_unknown_run_fails_cleanly(config: str, database: Path, capsys):
     assert cli.main(["export", "-c", config, "9"]) == 1
+    assert "does not exist: no runs have been recorded" in capsys.readouterr().err
+    from openreactor.storage import Store
+
+    Store(database).close()
+    assert cli.main(["export", "-c", config, "9"]) == 1
     assert "there is no run 9" in capsys.readouterr().err
+
+
+def test_run_exits_1_when_recording_failed(
+    config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    from openreactor import storage
+
+    real = storage.Store.add_readings
+    calls = {"n": 0}
+
+    def failing(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 2:
+            raise sqlite3.OperationalError("database or disk is full")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(storage.Store, "add_readings", failing)
+    stop_after(5.0, monkeypatch)
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 1
+    assert "run 1: interrupted (database or disk is full)" in capsys.readouterr().err
+
+
+def test_run_interrupted_before_it_starts_exits_130(
+    config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    stop_after(0.5, monkeypatch)  # during the startup check
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 130
+    assert "interrupted before the run started" in capsys.readouterr().err
+    assert not database.exists()

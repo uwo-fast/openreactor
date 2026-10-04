@@ -23,9 +23,9 @@ ezo_period_s = 2.0
 watchdog_timeout_ms = 5000
 
 [storage]
-# Where runs are recorded. An installed service uses
-# /var/lib/openreactor/openreactor.db; left unset, each user gets
-# ~/.local/state/openreactor/openreactor.db.
+# Where runs are recorded. Left unset, each user gets
+# ~/.local/state/openreactor/openreactor.db; a system-wide install would set,
+# for example:
 # database = "/var/lib/openreactor/openreactor.db"
 
 # Set each address to what your board answers on. The EZO addresses below are

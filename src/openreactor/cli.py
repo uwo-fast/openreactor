@@ -8,7 +8,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
 
@@ -161,7 +161,7 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
             # The reader of our output went away (read --follow | head).
             return 0
         except (StorageError, sqlite3.Error) as e:
-            print(f"error: {e}", file=sys.stderr)
+            print(f"error: {_database(config)}: {e}", file=sys.stderr)
             return 1
         except OSError as e:
             where = f"{e.filename}: " if e.filename else ""
@@ -208,9 +208,8 @@ def _ezo_devices(args: argparse.Namespace, config: Config) -> list[DeviceConfig]
     return devices
 
 
-def _store(config: Config) -> Store:
-    path = Path(config.storage.database) if config.storage.database else default_path()
-    return Store(path)
+def _database(config: Config) -> Path:
+    return Path(config.storage.database) if config.storage.database else default_path()
 
 
 def _run(args: argparse.Namespace, config: Config) -> int:
@@ -218,51 +217,83 @@ def _run(args: argparse.Namespace, config: Config) -> int:
     if devices is None:
         return 1
     config_text = Path(args.config).read_text()
-    with _controller(config, devices, auto_read=True) as (controller, problems):
-        # Only now, holding the controller lock, is no other run live: a run
-        # still marked running was left by a process that died.
-        store = _store(config)
-        try:
-            for stale in store.interrupt_stale_runs():
-                print(f"note: run {stale} was left running; marked interrupted", file=sys.stderr)
-            run = store.start_run(args.name, config_text, args.notes)
-            names = {d.name: (d.name, d.kind) for d in devices}
-            recorder = Recorder(store, run, names)
-            for problem in problems:
-                _print(problem)
-                recorder(problem)
-            print(
-                f"run {run} ({args.name}): recording; Ctrl-C to stop", file=sys.stderr, flush=True
-            )
-            controller.subscribe(recorder)
+    run: int | None = None
+    recorder: Recorder | None = None
+    try:
+        with _controller(config, devices, auto_read=True) as (controller, problems):
+            # Only now, holding the controller lock, is no other run live: a
+            # run still marked running was left by a process that died.
+            store = Store(_database(config))
             try:
-                _follow(controller)
+                for stale in store.interrupt_stale_runs():
+                    print(
+                        f"note: run {stale} was left running; marked interrupted", file=sys.stderr
+                    )
+                try:
+                    run = store.start_run(args.name, config_text, args.notes)
+                    names = {d.name: (d.name, d.kind) for d in devices}
+                    recorder = Recorder(store, run, names)
+                    for problem in problems:
+                        _print(problem)
+                        recorder(problem)
+                    print(f"run {run} ({args.name}): recording; Ctrl-C to stop", file=sys.stderr)
+                    store.recording()
+                    controller.subscribe(recorder)
+                    _follow(controller)
+                finally:
+                    try:
+                        # Stop-all first, so its events are part of the run.
+                        controller.close()
+                    finally:
+                        if run is not None:
+                            _end_run(store, run, recorder)
             finally:
-                # Stop-all first, so its events are part of the run.
-                controller.close()
-                if recorder.failed is None:
-                    store.end_run(run, "stopped")
-                    print(f"run {run}: stopped", file=sys.stderr)
-                else:
-                    print(f"run {run}: interrupted ({recorder.failed})", file=sys.stderr)
-        finally:
-            store.close()
+                store.close()
+    except (KeyboardInterrupt, _Stop):
+        if run is None:
+            print("interrupted before the run started", file=sys.stderr)
+            return 130
+    if recorder is not None and recorder.failed is not None:
+        return 1
     return 0
+
+
+def _end_run(store: Store, run: int, recorder: Recorder | None) -> None:
+    if recorder is not None and recorder.failed is not None:
+        print(f"run {run}: interrupted ({recorder.failed})", file=sys.stderr)
+        return
+    store.setup()
+    try:
+        store.end_run(run, "stopped")
+    except sqlite3.Error as e:
+        print(f"run {run}: could not be marked stopped ({e})", file=sys.stderr)
+        return
+    print(f"run {run}: stopped", file=sys.stderr)
+
+
+def _open_for_reading(config: Config) -> Store | None:
+    path = _database(config)
+    try:
+        return Store(path, read_only=True)
+    except (StorageError, sqlite3.Error) as e:
+        print(f"error: {path}: {e}", file=sys.stderr)
+        return None
 
 
 def _runs(args: argparse.Namespace) -> int:
     config = _load(args.config)
     if config is None:
         return 1
-    try:
-        store = _store(config)
-    except (OSError, sqlite3.Error, StorageError) as e:
-        print(f"error: {e}", file=sys.stderr)
+    store = _open_for_reading(config)
+    if store is None:
         return 1
     try:
         for r in store.runs():
             ended = _when(r.ended) if r.ended else "-"
-            print(f"{r.id:>4}  {r.status:<11}  {_when(r.started)}  {ended:<19}  {r.name}")
+            print(f"{r.id:>4}  {r.status:<11}  {_when(r.started)}  {ended:<20}  {r.name}")
+    except sqlite3.Error as e:
+        print(f"error: {store.path}: {e}", file=sys.stderr)
+        return 1
     finally:
         store.close()
     return 0
@@ -273,21 +304,25 @@ def _export(args: argparse.Namespace) -> int:
     if config is None:
         return 1
     destination = Path(args.output or f"run-{args.run}.zip")
+    store = _open_for_reading(config)
+    if store is None:
+        return 1
     try:
-        store = _store(config)
-        try:
-            store.export(args.run, destination)
-        finally:
-            store.close()
+        store.export(args.run, destination)
+    except FileExistsError:
+        print(f"error: {destination} already exists", file=sys.stderr)
+        return 1
     except (OSError, sqlite3.Error, StorageError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    finally:
+        store.close()
     print(destination)
     return 0
 
 
 def _when(t: float) -> str:
-    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def _read(args: argparse.Namespace, config: Config) -> int:
@@ -385,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     recording.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
     recording.add_argument("--name", required=True, help="a name for the run")
     recording.add_argument("--notes", default="", help="free-text notes stored with the run")
-    recording.set_defaults(func=_device_command(_run), follow=True)
+    recording.set_defaults(func=_device_command(_run))
 
     listing = commands.add_parser("runs", help="list recorded runs")
     listing.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
