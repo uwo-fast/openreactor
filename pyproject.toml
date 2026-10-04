@@ -17,6 +17,8 @@ classifiers = [
 dependencies = [
     # 0.x: a minor release may break the API.
     "ezo-driver>=0.6,<0.7",
+    "crumbs-i2c>=0.15,<0.16",
+    "bread-crumbs-contracts>=0.5,<0.6",
     # Capped at the next minor (FastAPI) or major (Starlette, pydantic):
     # their breaking changes land there.
     "fastapi>=0.142,<0.143",

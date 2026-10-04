@@ -38,6 +38,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bread-crumbs-contracts"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/83/5d1f71007417170d98ffef5d70348174b917b762afafc21f3ebd8ab5e491/bread_crumbs_contracts-0.5.0.tar.gz", hash = "sha256:e69957aedaa6b54ac8ddf81512491147a51a3164248b3ddfc7b41fd2a25c1fa3", size = 24352, upload-time = "2026-10-04T06:23:03.826Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/5c/7617d35d8f2430c6b041f7ab9e3ab2987f9dc457892a258a4f0c8e21ee90/bread_crumbs_contracts-0.5.0-py3-none-any.whl", hash = "sha256:0c3e9f76662b907c1db7655d28f6740e5021fdbab4f1dfdf76caf914aa038f30", size = 26740, upload-time = "2026-10-04T06:23:02.344Z" },
+]
+
+[[package]]
 name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -151,6 +160,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "crumbs-i2c"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/fa/9489a45f6e166006d5703fe8e57890e9ef041c88b27fb297c8f03b635ed6/crumbs_i2c-0.15.0.tar.gz", hash = "sha256:0d226057424ffbd1eb861336a012d76cd87b1c40063bb2a1d615b19904fa6e0b", size = 20176, upload-time = "2026-10-04T15:49:28.974Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/0e/ae58598accd15a7fbc6ceba98d7cb3582f234852ac7a857a90310e35e648/crumbs_i2c-0.15.0-py3-none-any.whl", hash = "sha256:08485d16ac77bd1650e2ff574d4d979c68cdc6608626d1a3971e8896350d2a0d", size = 21141, upload-time = "2026-10-04T15:49:27.778Z" },
 ]
 
 [[package]]
@@ -412,6 +430,8 @@ name = "openreactor"
 version = "2.0.0a1"
 source = { editable = "." }
 dependencies = [
+    { name = "bread-crumbs-contracts" },
+    { name = "crumbs-i2c" },
     { name = "ezo-driver" },
     { name = "fastapi" },
     { name = "itsdangerous" },
@@ -431,6 +451,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bread-crumbs-contracts", specifier = ">=0.5,<0.6" },
+    { name = "crumbs-i2c", specifier = ">=0.15,<0.16" },
     { name = "ezo-driver", specifier = ">=0.6,<0.7" },
     { name = "fastapi", specifier = ">=0.142,<0.143" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },

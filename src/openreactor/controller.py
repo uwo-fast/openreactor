@@ -59,6 +59,13 @@ class Actuator(Protocol):
 Listener = Callable[["Result | Event"], None]
 
 
+class Polled(Protocol):
+    """A device the controller polls each tick: it does whatever is due at
+    ``now`` without waiting, and returns what it read."""
+
+    def advance(self, now: float) -> list[Result]: ...
+
+
 @dataclass
 class _Job:
     channel: str
@@ -88,6 +95,7 @@ class Controller:
         reader: EzoReader,
         actuators: Sequence[Actuator] = (),
         *,
+        polled: Sequence[Polled] = (),
         ezo_period_s: float,
         auto_read: bool = False,
         clock: Callable[[], float] = time.monotonic,
@@ -96,6 +104,7 @@ class Controller:
     ):
         self.reader = reader
         self.actuators = list(actuators)
+        self.polled = list(polled)
         self._period = ezo_period_s
         self._auto_read = auto_read
         self._clock = clock
@@ -170,6 +179,14 @@ class Controller:
         now = self._clock()
         self._advance_jobs(now)
         self._advance_reads(now)
+        self._advance_polled(now)
+
+    def _advance_polled(self, now: float) -> None:
+        if self._closed:
+            return
+        for device in self.polled:
+            for result in device.advance(now):
+                self._publish(result)
 
     def _drain_commands(self) -> None:
         while True:

@@ -42,6 +42,14 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   every page and a sign-in page when a password is set. It works offline:
   Bootstrap, htmx and Chart.js are vendored, recorded with their hashes in
   `static/vendor/vendor.toml` and updated with `just vendor`.
+- RLHT heater slices over CRUMBS, in `run` and `serve`: start-up checks
+  type, CRUMBS version and module version, sends the safe state, arms and
+  confirms the command watchdog when the slice has one (otherwise read-only
+  unless `allow_unprotected`), and sets closed-loop mode, thermocouples and any
+  configured periods and gains (new optional `kp`, `ki`, `kd` and `period_ms`
+  per channel). GET_STATE every `slice_poll_s` keeps the watchdog fed and
+  reports each channel's temperature, setpoint and duty. Stop-all sends both
+  stop ops to every slice.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one and `--dry-run` prints
   its timeline; an example is in `examples/profiles/`.

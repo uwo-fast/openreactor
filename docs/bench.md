@@ -12,6 +12,7 @@ the openreactor and library versions, and the firmware commit on each slice.
 | Desired state re-asserted after a slice power-cycle | | | | | |
 | E-stop pressed and released resumes nothing | | | | | |
 | Stop-all from the UI, the API and `systemctl stop` | | | | | |
+| Time from stop-all to the relay off, on a heating RLHT output (#51) | | | | | |
 | Each EZO family reads, with temperature compensation applied | | | | | |
 | Each EZO family calibrated from the CLI | | | | | |
 | A run recorded and exported from the CLI and the API | | | | | |
@@ -65,8 +66,9 @@ On 64-bit Raspberry Pi OS (Bookworm or Trixie):
    ```
 
    A circuit that is missing, at the wrong address or of the wrong family is
-   reported by name, and the others are still read. Slices in the config are
-   skipped with a note until #24 and #25.
+   reported by name, and the others are still read. `read` never touches a
+   slice; `run` and `serve` start the RLHT slices, and DCMT slices are skipped
+   with a note until #25.
 
 5. Check the controller lock across users: run `openreactor read --follow` as
    one user, then `sudo openreactor read` in another terminal. The second

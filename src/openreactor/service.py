@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from crumbs_i2c import Bus, LinuxBus
+
 from openreactor.config import Config, DeviceConfig
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
@@ -35,6 +37,7 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
+from openreactor.rlht import RlhtSlice, opened_slices
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -101,8 +104,9 @@ class Service:
         config_text: str,
         controller: Controller,
         database: Path,
-        problems: Sequence[Result] = (),
+        problems: Sequence[Result | Event] = (),
         wall: Callable[[], float] = time.time,
+        slices: Sequence[RlhtSlice] = (),
     ):
         self.config = config
         self._config_text = config_text
@@ -111,11 +115,19 @@ class Service:
         self._wall = wall
         self._lock = threading.Lock()
         self._latest: dict[str, ChannelState] = {}
-        self._problems = {p.channel: p for p in problems}
+        self._problems = {p.channel: p for p in problems if isinstance(p, Result)}
+        self._slices = {s.name: s for s in slices}
         self._store: Store | None = None
         self._recorder: Recorder | None = None
         self._run: int | None = None
         self._ezo = {d.name: d for d in config.devices if d.kind in FAMILIES}
+        # Where each published channel comes from: (device, kind).
+        self._sources: dict[str, tuple[str, str]] = {
+            d: (d, dev.kind) for d, dev in self._ezo.items()
+        }
+        for d in config.devices:
+            if d.kind == "rlht":
+                self._sources.update({ch.name: (d.name, d.kind) for ch in d.channels})
         controller.subscribe(self._remember)
 
     # Called on the controller's thread
@@ -123,13 +135,12 @@ class Service:
     def _remember(self, item: Result | Event) -> None:
         if not isinstance(item, Result):
             return
-        device = self._ezo.get(item.channel)
-        kind = device.kind if device else ""
+        device, kind = self._sources.get(item.channel, (item.channel, ""))
         at = self._wall()
         with self._lock:
             if item.outcome is not Outcome.OK:
                 for name, state in list(self._latest.items()):
-                    if state.device == item.channel:
+                    if name == item.channel or name.startswith(f"{item.channel}."):
                         self._latest[name] = ChannelState(
                             name,
                             state.device,
@@ -142,20 +153,20 @@ class Service:
                 return
             for v in item.values:
                 name = f"{item.channel}.{v.field}" if v.field else item.channel
-                self._latest[name] = ChannelState(
-                    name, item.channel, kind, v.unit, v.value, at, "ok"
-                )
+                self._latest[name] = ChannelState(name, device, kind, v.unit, v.value, at, "ok")
 
     # Status and channels
 
     def devices(self) -> list[DeviceState]:
         states: list[DeviceState] = []
         for d in self.config.devices:
-            if d.kind not in FAMILIES:
-                status = "slices are not supported yet"
+            if d.kind == "dcmt":
+                status = "DCMT slices are not supported yet"
             elif d.name in self._problems:
                 p = self._problems[d.name]
                 status = f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+            elif d.name in self._slices and self._slices[d.name].read_only:
+                status = "read-only: the slice has no command watchdog"
             else:
                 status = "ok"
             states.append(DeviceState(d.name, d.kind, status))
@@ -176,7 +187,9 @@ class Service:
     def set_setpoint(self, channel: str, value: float) -> None:
         for d in self.config.devices:
             if any(ch.name == channel for ch in d.channels):
-                raise Unavailable(f"{channel} is on a {d.kind} slice; slices are not supported yet")
+                raise Unavailable(
+                    f"{channel} is on a {d.kind} slice; setpoints on slices are not supported yet"
+                )
         raise NotFound(f"no actuated channel {channel!r}")
 
     # Stop-all
@@ -210,8 +223,7 @@ class Service:
             # still marked running was left by a process that died.
             store.interrupt_stale_runs()
             run = store.start_run(name, self._config_text, notes)
-            names = {d: (d, dev.kind) for d, dev in self._ezo.items()}
-            self._recorder = Recorder(store, run, names, wall=self._wall)
+            self._recorder = Recorder(store, run, dict(self._sources), wall=self._wall)
             store.recording()
             self.controller.subscribe(self._recorder)
             self._run = run
@@ -329,18 +341,19 @@ def running(
     *,
     open_port: Callable[[DeviceConfig], EzoPort] = _open_port,
     actuators: Sequence[Actuator] = (),
+    open_bus: Callable[[str], Bus] = LinuxBus,
     lock_path: Path | None = LOCK_PATH,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Iterator[Service]:
-    """Take the controller lock, open and check the circuits, start the
-    controller on its own thread, and yield the service. On the way out,
-    stop-all is sent before the circuits close. ``lock_path=None`` means the
-    caller already holds the lock."""
+    """Take the controller lock, open and check the circuits, start the RLHT
+    slices, start the controller on its own thread, and yield the service. On
+    the way out, stop-all is sent before anything closes. ``lock_path=None``
+    means the caller already holds the lock."""
     database = Path(config.storage.database) if config.storage.database else default_path()
     with ControllerLock(lock_path) if lock_path is not None else nullcontext():
         channels: list[EzoChannel] = []
-        problems: list[Result] = []
+        problems: list[Result | Event] = []
         try:
             for d in config.devices:
                 if d.kind not in FAMILIES:
@@ -351,20 +364,32 @@ def running(
                     problems.append(Result(d.name, Outcome.ERROR, detail=str(e)))
             reader = EzoReader(channels, clock=clock, sleep=sleep)
             problems += reader.prepare()
-            controller = Controller(
-                reader,
-                actuators,
-                ezo_period_s=config.controller.ezo_period_s,
-                auto_read=True,
+            with opened_slices(
+                config.devices,
+                watchdog_timeout_ms=config.controller.watchdog_timeout_ms,
+                poll_s=config.controller.slice_poll_s,
+                open_bus=open_bus,
                 clock=clock,
                 sleep=sleep,
-            )
-            service = Service(config, config_text, controller, database, problems)
-            controller.start()
-            try:
-                yield service
-            finally:
-                service.close()
+            ) as (slices, reports):
+                problems += reports
+                controller = Controller(
+                    reader,
+                    [*actuators, *slices],
+                    polled=[s for s in slices if s.started],
+                    ezo_period_s=config.controller.ezo_period_s,
+                    auto_read=True,
+                    clock=clock,
+                    sleep=sleep,
+                )
+                service = Service(
+                    config, config_text, controller, database, problems, slices=slices
+                )
+                controller.start()
+                try:
+                    yield service
+                finally:
+                    service.close()
         finally:
             for ch in channels:
                 ch.port.close()

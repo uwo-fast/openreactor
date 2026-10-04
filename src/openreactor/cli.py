@@ -16,6 +16,8 @@ from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING
 
+from crumbs_i2c import Bus, LinuxBus
+
 from openreactor import __version__
 from openreactor.auth import hash_password
 from openreactor.config import Config, ConfigError, DeviceConfig, load_config
@@ -37,6 +39,7 @@ from openreactor.ezo import (
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
 from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
+from openreactor.rlht import opened_slices
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
 if TYPE_CHECKING:
@@ -61,9 +64,14 @@ def open_port(device: DeviceConfig) -> EzoPort:
 
 
 def actuators(config: Config) -> list[Actuator]:
-    """The outputs stop-all makes safe. The slices add theirs in #24 and #25;
-    tests replace this with fakes."""
+    """Outputs stop-all makes safe besides the slices, which add themselves.
+    Tests replace this with fakes."""
     return []
+
+
+def open_bus(path: str) -> Bus:
+    """Open an I2C bus for the CRUMBS slices. Tests replace this."""
+    return LinuxBus(path)
 
 
 # How long, after SIGINT or SIGTERM, requests in progress may take to
@@ -183,14 +191,19 @@ def _on_sigterm(signum: int, frame: FrameType | None) -> None:
 
 @contextmanager
 def _controller(
-    config: Config, devices: Sequence[DeviceConfig], *, auto_read: bool = False
-) -> Iterator[tuple[Controller, list[Result]]]:
-    """Take the lock, open the circuits, check them, and yield a controller
-    with the startup problems. On the way out, even on Ctrl-C or SIGTERM,
-    stop-all is sent before the circuits are closed."""
+    config: Config,
+    devices: Sequence[DeviceConfig],
+    *,
+    auto_read: bool = False,
+    with_slices: bool = False,
+) -> Iterator[tuple[Controller, list[Result | Event]]]:
+    """Take the lock, open the circuits (and, ``with_slices``, start the
+    RLHT slices), check them, and yield a controller with the start-up
+    problems and events. On the way out, even on Ctrl-C or SIGTERM, stop-all
+    is sent before anything is closed."""
     with ControllerLock(lock_path):
         channels: list[EzoChannel] = []
-        problems: list[Result] = []
+        problems: list[Result | Event] = []
         try:
             for d in devices:
                 try:
@@ -199,18 +212,28 @@ def _controller(
                     problems.append(Result(d.name, Outcome.ERROR, detail=str(e)))
             reader = EzoReader(channels, clock=clock, sleep=sleep)
             problems += reader.prepare()
-            controller = Controller(
-                reader,
-                actuators(config),
-                ezo_period_s=config.controller.ezo_period_s,
-                auto_read=auto_read,
+            with opened_slices(
+                config.devices if with_slices else (),
+                watchdog_timeout_ms=config.controller.watchdog_timeout_ms,
+                poll_s=config.controller.slice_poll_s,
+                open_bus=open_bus,
                 clock=clock,
                 sleep=sleep,
-            )
-            try:
-                yield controller, problems
-            finally:
-                controller.close()
+            ) as (slices, reports):
+                problems += reports
+                controller = Controller(
+                    reader,
+                    [*actuators(config), *slices],
+                    polled=[s for s in slices if s.started],
+                    ezo_period_s=config.controller.ezo_period_s,
+                    auto_read=auto_read,
+                    clock=clock,
+                    sleep=sleep,
+                )
+                try:
+                    yield controller, problems
+                finally:
+                    controller.close()
         finally:
             for ch in channels:
                 ch.port.close()
@@ -289,15 +312,32 @@ def _database(config: Config) -> Path:
     return Path(config.storage.database) if config.storage.database else default_path()
 
 
+def _slice_channels(config: Config) -> dict[str, tuple[str, str]]:
+    """Each RLHT channel's device and kind, for recording its readings."""
+    return {
+        ch.name: (d.name, d.kind) for d in config.devices if d.kind == "rlht" for ch in d.channels
+    }
+
+
 def _run(args: argparse.Namespace, config: Config) -> int:
-    devices = _ezo_devices(args, config)
-    if devices is None:
+    devices = [d for d in config.devices if d.kind in FAMILIES]
+    if not devices and not any(d.kind == "rlht" for d in config.devices):
+        print(f"error: {args.config} lists no EZO devices or RLHT slices", file=sys.stderr)
         return 1
+    unsupported = [d.name for d in config.devices if d.kind == "dcmt"]
+    if unsupported:
+        print(
+            f"note: not using {', '.join(unsupported)}: DCMT slices are not supported yet",
+            file=sys.stderr,
+        )
     config_text = Path(args.config).read_text()
     run: int | None = None
     recorder: Recorder | None = None
     try:
-        with _controller(config, devices, auto_read=True) as (controller, problems):
+        with _controller(config, devices, auto_read=True, with_slices=True) as (
+            controller,
+            problems,
+        ):
             # Only now, holding the controller lock, is no other run live: a
             # run still marked running was left by a process that died.
             store = Store(_database(config))
@@ -309,6 +349,7 @@ def _run(args: argparse.Namespace, config: Config) -> int:
                 try:
                     run = store.start_run(args.name, config_text, args.notes)
                     names = {d.name: (d.name, d.kind) for d in devices}
+                    names.update(_slice_channels(config))
                     recorder = Recorder(store, run, names)
                     for problem in problems:
                         _print(problem)
@@ -585,6 +626,7 @@ def _serve(args: argparse.Namespace) -> int:
             config_text,
             open_port=open_port,
             actuators=actuators(config),
+            open_bus=open_bus,
             lock_path=None,  # held below, for the server's whole life
             clock=clock,
             sleep=sleep,

@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from fakes import FakeActuator, FakeClock, FakePort
+from fakes import FakeActuator, FakeClock, FakeI2cBus, FakePort, FakeRlht
 
 from openreactor import cli
 from openreactor.config import DeviceConfig
@@ -52,6 +52,14 @@ def lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "openreactor.lock"
     monkeypatch.setattr(cli, "lock_path", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def heater(monkeypatch: pytest.MonkeyPatch) -> FakeRlht:
+    """The config's RLHT at 0x0A, on a fake bus: no test reaches /dev/i2c."""
+    rlht = FakeRlht()
+    monkeypatch.setattr(cli, "open_bus", lambda path: FakeI2cBus({0x0A: rlht}))
+    return rlht
 
 
 @pytest.fixture
@@ -370,7 +378,16 @@ def test_run_records_until_stopped_and_exports(
         events = z.read("events.csv").decode()
         meta = json.loads(z.read("run.json"))
     channels = {row[1] for row in readings[1:]}
-    assert channels == {"vessel_temp", "ph", "do.mg_l", "do.saturation"}
+    # The EZO circuits, and the RLHT's channel from its poll.
+    assert channels == {
+        "vessel_temp",
+        "ph",
+        "do.mg_l",
+        "do.saturation",
+        "jacket.temperature",
+        "jacket.setpoint",
+        "jacket.duty",
+    }
     assert "stop-all,heater,,,ok" in events  # stop-all is part of the run
     assert meta["status"] == "stopped" and meta["notes"] == "first"
     assert meta["config"] == Path(config).read_text()
@@ -476,3 +493,40 @@ def test_a_long_database_lock_still_ends_the_run_interrupted(
     store = Store(database)
     assert [r.status for r in store.runs()] == ["interrupted"]
     store.close()
+
+
+def test_read_and_ezo_cal_never_touch_a_slice(config: str, ports, monkeypatch, capsys):
+    """Only run and serve start slices: a sensor read must not arm a
+    watchdog or send a slice anything."""
+
+    def no_bus(path: str) -> FakeI2cBus:
+        raise AssertionError(f"opened {path}")
+
+    monkeypatch.setattr(cli, "open_bus", no_bus)
+    assert cli.main(["read", "--once", "-c", config]) == 0
+    assert cli.main(["ezo", "cal", "-c", config, "ph", "status"]) == 0
+
+
+def test_run_starts_the_slice_and_makes_it_safe_on_the_way_out(
+    config: str, ports, heater: FakeRlht, database: Path, monkeypatch
+):
+    stop_after(3.0, monkeypatch)
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 0
+    sent = [op for op, _ in heater.commands]
+    # Start-up: safe state, then the watchdog; at the end, stop-all.
+    assert sent[:3] == [0x02, 0x06, 0x7E]
+    assert sent[-2:] == [0x02, 0x06]
+    assert heater.armed == 1
+
+
+def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(
+    config: str, ports, heater: FakeRlht, database: Path, monkeypatch, capsys
+):
+    """Polling would feed the watchdog of a slice whose start-up failed;
+    it must get only stop-all."""
+    heater.arms = False
+    stop_after(3.0, monkeypatch)
+    assert cli.main(["run", "-c", config, "--name", "brew"]) == 0
+    assert "watchdog did not arm" in capsys.readouterr().out
+    assert heater.state_replies == 0
+    assert [op for op, _ in heater.commands][-2:] == [0x02, 0x06]
