@@ -12,6 +12,7 @@ the openreactor and library versions, and the firmware commit on each slice.
 | Desired state re-asserted after a slice power-cycle | | | | | |
 | E-stop pressed and released resumes nothing | | | | | |
 | Stop-all from the UI, the API and `systemctl stop` | | | | | |
+| Time from stop-all to the relay off, on a heating RLHT output (#51) | | | | | |
 | Each EZO family reads, with temperature compensation applied | | | | | |
 | Each EZO family calibrated from the CLI | | | | | |
 | A run recorded and exported from the CLI and the API | | | | | |

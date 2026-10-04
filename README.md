@@ -83,7 +83,9 @@ the slice's outputs, since the slice takes both at once; nothing is filled in. A
 read-only unless its config sets `allow_unprotected = true`. Each slice is then
 polled every `slice_poll_s`, which also keeps its watchdog fed, and its
 channels' temperature, setpoint and duty are read and recorded like any
-sensor. Stop-all sends every slice its safe state. Setpoints on slices, and
+sensor. Stop-all sends every slice its safe state. Until feastorg/Slice_RLHT#13
+is fixed, that does not turn a running heater off at once: the slice keeps its
+PID integral, so the output decays to off over seconds (#51). Setpoints on slices, and
 the watchdog's trip and reboot checks, come next (#24).
 
 A run records every reading and event (stop-all, failed reads) in SQLite, at
