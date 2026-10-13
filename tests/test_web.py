@@ -1,130 +1,37 @@
+import asyncio
 import errno
 import io
+import json
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import threading
 import time
+import urllib.request
 import zipfile
-from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from fakes import FakeActuator, FakeI2cBus, FakePort, FakeRlht
+from conftest import HASH, LOCAL, PASSWORD, Bench, config_text, until
+from fakes import SET_SETPOINTS
 from fastapi.testclient import TestClient
 
-from openreactor import cli
-from openreactor.auth import hash_password
-from openreactor.config import Config, DeviceConfig, parse_config
-from openreactor.ezo import Value
+from openreactor import cli, service, web
+from openreactor.auth import verify_password
+from openreactor.controller import Controller
+from openreactor.ezo import EzoDeviceError, EzoReader, Outcome
 from openreactor.lock import ControllerLock
-from openreactor.service import running
+from openreactor.service import Service
 from openreactor.storage import Store
-from openreactor.web import MAX_BODY_BYTES, SESSION_COOKIE, create_app
-
-PASSWORD = "correct horse"
-HASH = hash_password(PASSWORD)
-LOCAL = "http://127.0.0.1"
-
-# The controller runs on its own thread in real time; run that time 20 times
-# faster so the fake circuits' delays do not make the tests slow.
-SPEED = 20.0
-
-
-def fast_clock() -> float:
-    return time.monotonic() * SPEED
-
-
-def fast_sleep(seconds: float) -> None:
-    time.sleep(seconds / SPEED)
-
-
-DEVICES = """
-[controller]
-ezo_period_s = 0.5
-
-[[device]]
-name = "heater"
-kind = "rlht"
-bus = "/dev/i2c-1"
-address = 0x0A
-channels.jacket = { output = 1, tc = 1, max_setpoint = 80 }
-
-[[device]]
-name = "air"
-kind = "ezo-hum"
-bus = "/dev/i2c-1"
-address = 0x6F
-"""
-
-
-def config_text(password: bool, database: Path) -> str:
-    server = f'[server]\npassword_hash = "{HASH}"\n' if password else ""
-    return f'{server}[storage]\ndatabase = "{database}"\n{DEVICES}'
-
-
-class Bench:
-    """The app over fake circuits, with what the tests look at."""
-
-    def __init__(self, tmp_path: Path, password: bool):
-        self.database = tmp_path / "state" / "openreactor.db"
-        self.text = config_text(password, self.database)
-        import tomllib
-
-        self.config: Config = parse_config(tomllib.loads(self.text))
-        self.port = FakePort(
-            "hum",
-            (Value("humidity", 41.0, "%"), Value("temperature", 22.5, "°C")),
-            wait_ms=300,
-        )
-        self.log: list[str] = []
-        # The config's RLHT, answering on a fake bus.
-        self.rlht = FakeRlht()
-        self.rlht_address = 0x0A  # where it answers; the config says 0x0A
-        # What serve would print: start-up problems and events, then events.
-        self.printed: list = []
-        self.lock = tmp_path / "openreactor.lock"
-
-        def open_port(d: DeviceConfig) -> FakePort:
-            return self.port
-
-        def start():
-            return running(
-                self.config,
-                self.text,
-                open_port=open_port,
-                actuators=[FakeActuator("jacket", self.log)],
-                open_bus=lambda path: FakeI2cBus({self.rlht_address: self.rlht}),
-                lock_path=self.lock,
-                clock=fast_clock,
-                sleep=fast_sleep,
-                on_event=self.printed.append,
-            )
-
-        self.app = create_app(self.config, start)
-
-
-@pytest.fixture
-def open_bench(tmp_path: Path) -> Iterator[tuple[Bench, TestClient]]:
-    bench = Bench(tmp_path, password=False)
-    with TestClient(bench.app, base_url=LOCAL) as client:
-        yield bench, client
-
-
-@pytest.fixture
-def locked_bench(tmp_path: Path) -> Iterator[tuple[Bench, TestClient]]:
-    bench = Bench(tmp_path, password=True)
-    with TestClient(bench.app, base_url=LOCAL) as client:
-        yield bench, client
+from openreactor.web import MAX_BODY_BYTES, SESSION_COOKIE, BodyLimit, Busy, Gate
 
 
 def sign_in(client: TestClient) -> None:
     r = client.post("/login", data={"password": PASSWORD}, headers={"Origin": LOCAL})
     assert r.status_code == 204
     assert SESSION_COOKIE in client.cookies
-
-
-def until(check: Callable[[], bool], timeout_s: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not check():
-        assert time.monotonic() < deadline, "timed out"
-        time.sleep(0.05)
 
 
 BEARER = {"Authorization": f"Bearer {PASSWORD}"}
@@ -249,12 +156,12 @@ def test_a_setpoint_must_be_a_json_number_and_is_checked_as_sent(open_bench):
 def test_a_failed_send_is_an_error_event_and_a_502(open_bench):
     bench, client = open_bench
     run = client.post("/api/v1/runs", json={"name": "heat"}).json()["id"]
-    bench.rlht.fail_after[0x02] = OSError(errno.ETIMEDOUT, "Connection timed out")
+    bench.rlht.fail_after[SET_SETPOINTS] = OSError(errno.ETIMEDOUT, "Connection timed out")
     r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 70})
     assert r.status_code == 502
     assert "it may have reached the slice" in r.json()["detail"]
     # It did: the polls find the slice running what nobody wants, and stop it.
-    del bench.rlht.fail_after[0x02]
+    del bench.rlht.fail_after[SET_SETPOINTS]
     until(lambda: bench.rlht.setpoints == [0, 0])
     client.post("/api/v1/runs/current/stop")
     export = client.get(f"/api/v1/runs/{run}/export")
@@ -526,8 +433,6 @@ def test_a_malformed_password_hash_fails_the_config(tmp_path: Path, capsys):
 
 
 def test_hash_password_reads_stdin(monkeypatch: pytest.MonkeyPatch, capsys):
-    from openreactor.auth import verify_password
-
     monkeypatch.setattr("sys.stdin", io.StringIO("s3cret\n"))
     assert cli.main(["hash-password"]) == 0
     made = capsys.readouterr().out.strip()
@@ -547,8 +452,6 @@ def test_serve_reports_an_unusable_lock_path(tmp_path: Path, served, monkeypatch
 
 
 def test_calibrating_a_device_that_failed_at_startup_says_why(tmp_path: Path):
-    from openreactor.ezo import EzoDeviceError
-
     bench = Bench(tmp_path, password=False)
     bench.port.family_error = EzoDeviceError("cannot open /dev/i2c-1 at 0x6F: no reply")
     with TestClient(bench.app, base_url=LOCAL) as client:
@@ -577,11 +480,6 @@ def test_a_large_body_is_refused_before_it_is_read(locked_bench):
 
 
 def test_one_guessing_client_cannot_lock_out_another(monkeypatch):
-    import threading
-
-    from openreactor import web
-    from openreactor.web import Busy, Gate
-
     gate = Gate(HASH)
     real = web.verify_password
     entered, release = threading.Event(), threading.Event()
@@ -617,11 +515,6 @@ def test_one_guessing_client_cannot_lock_out_another(monkeypatch):
 
 
 def test_a_check_that_stays_busy_gives_up(monkeypatch):
-    import threading
-
-    from openreactor import web
-    from openreactor.web import Busy, Gate
-
     monkeypatch.setattr(web, "CHECK_WAIT_S", 0.1)
     gate = Gate(HASH)
     entered, release = threading.Event(), threading.Event()
@@ -642,8 +535,6 @@ def test_a_check_that_stays_busy_gives_up(monkeypatch):
 
 
 def test_a_busy_gate_answers_429(locked_bench, monkeypatch):
-    from openreactor.web import Busy
-
     bench, client = locked_bench
 
     def busy(password: str, client: str = "") -> bool:
@@ -685,8 +576,6 @@ def test_stop_now_sends_stop_all_without_waiting(open_bench):
 
 
 def test_a_circuit_that_refuses_a_calibration_is_a_502(open_bench):
-    from openreactor.ezo import Outcome
-
     bench, client = open_bench
     bench.port.ack = Outcome.FAIL
     r = client.post("/api/v1/ezo/air/calibration", json={"point": "temperature", "value": 25.0})
@@ -714,8 +603,6 @@ def test_an_unwritable_database_is_a_503(tmp_path: Path):
 
 
 def test_status_shows_that_recording_stopped(open_bench, monkeypatch):
-    import sqlite3
-
     bench, client = open_bench
 
     def full(*args, **kwargs):
@@ -733,11 +620,6 @@ def test_status_shows_that_recording_stopped(open_bench, monkeypatch):
 
 
 def test_an_action_the_controller_never_reached_is_cancelled(tmp_path: Path, monkeypatch):
-    from openreactor import service
-    from openreactor.controller import Controller
-    from openreactor.ezo import EzoReader
-    from openreactor.service import Service
-
     monkeypatch.setattr(service, "ACTION_TIMEOUT_S", 0.05)
     bench = Bench(tmp_path, password=False)
     controller = Controller(EzoReader([]), [], ezo_period_s=2.0, auto_read=True)  # not ticking
@@ -750,8 +632,6 @@ def test_an_action_the_controller_never_reached_is_cancelled(tmp_path: Path, mon
 
 
 def test_a_port_in_use_is_an_error_before_any_device_opens(tmp_path: Path, monkeypatch, capsys):
-    import socket
-
     opened: list[str] = []
     monkeypatch.setattr(cli, "lock_path", tmp_path / "openreactor.lock")
     monkeypatch.setattr(cli, "open_port", lambda d: opened.append(d.name))
@@ -764,11 +644,6 @@ def test_a_port_in_use_is_an_error_before_any_device_opens(tmp_path: Path, monke
 
 
 def start_server(tmp_path: Path, config: str):
-    import socket
-    import subprocess
-    import sys
-    import urllib.request
-
     with socket.create_server(("127.0.0.1", 0)) as probe:
         port = probe.getsockname()[1]
     launch = (
@@ -795,8 +670,6 @@ def start_server(tmp_path: Path, config: str):
 
 
 def test_ctrl_c_stops_serve_cleanly(tmp_path: Path):
-    import signal
-
     server, _ = start_server(tmp_path, write_config(tmp_path, password=False))
     server.send_signal(signal.SIGINT)
     _, err = server.communicate(timeout=10)
@@ -808,13 +681,6 @@ def test_ctrl_c_stops_serve_cleanly(tmp_path: Path):
 def test_sigterm_sends_stop_all_at_once_even_with_a_slow_client(tmp_path: Path):
     """A client that never finishes its request must not hold back
     stop-all, nor keep the run from being ended."""
-    import json
-    import signal
-    import socket
-    import subprocess
-    import sys
-    import urllib.request
-
     config = write_config(tmp_path, password=False)
     with socket.create_server(("127.0.0.1", 0)) as probe:
         port = probe.getsockname()[1]
@@ -867,10 +733,6 @@ def test_sigterm_sends_stop_all_at_once_even_with_a_slow_client(tmp_path: Path):
 
 
 def test_a_declared_large_body_is_refused_without_reading_it():
-    import asyncio
-
-    from openreactor.web import BodyLimit
-
     async def app(scope, receive, send):
         raise AssertionError("the app ran")
 
@@ -955,10 +817,8 @@ def test_status_shows_a_slice_that_never_answered_or_did_not_start(tmp_path: Pat
 
 
 def test_status_survives_a_busy_controller(open_bench, monkeypatch: pytest.MonkeyPatch):
-    from openreactor import service as service_module
-
     bench, client = open_bench
-    monkeypatch.setattr(service_module, "SLICE_STATUS_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(service, "SLICE_STATUS_TIMEOUT_S", 0.2)
     svc = bench.app.state.service
     svc.controller.call(lambda: time.sleep(1.0))  # the controller is busy
     r = client.get("/api/v1/status")

@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import sqlite3
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -264,8 +265,6 @@ def test_a_non_finite_value_is_an_event_not_the_end_of_recording(store: Store):
 
 
 def test_two_first_opens_do_not_race(tmp_path: Path):
-    import threading
-
     for trial in range(30):
         path = tmp_path / f"db{trial}.db"
         errors: list[BaseException] = []
