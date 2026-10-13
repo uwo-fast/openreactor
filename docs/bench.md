@@ -6,18 +6,18 @@ the openreactor and library versions, and the firmware commit on each slice.
 
 | Check | Date | openreactor | Libraries | Firmware | Result |
 |---|---|---|---|---|---|
-| Firmware commits flashed on each slice | | | | | |
-| Version and caps reported as expected | | | | | |
-| Watchdog armed, and it trips when the process is killed | | | | | |
-| Desired state re-asserted after a slice power-cycle | | | | | |
-| E-stop pressed and released resumes nothing | | | | | |
-| Stop-all from the UI, the API and `systemctl stop` | | | | | |
-| Time from stop-all to the relay off, on a heating RLHT output (#51) | | | | | |
-| Each EZO family reads, with temperature compensation applied | | | | | |
+| Firmware commits flashed on each slice | 2026-10-12 | 2.0.0a1 (ade88dc) | crumbs-i2c 0.15.0, bread-crumbs-contracts 0.5.0, ezo-driver 0.6.0 | Slice_RLHT 4383bd9 (`gen1_nano`); 2× Slice_DCMT 44966b3 | RLHT flashed. The DCMTs are not exercised until #25 |
+| Version and caps reported as expected | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: RLHT 1.0.0, CRUMBS 0.12.5, caps 0x7F |
+| Watchdog armed, and it trips when the process is killed | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: armed at 5000 ms. After `kill -9` at ~400 ms on per 1000 ms, the relay went off ~5 s later, by eye. The trip count went 1, then 2, over two kills, and each restart re-armed the watchdog |
+| Desired state re-asserted after a slice power-cycle | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: backplane power cut for ~10 s at a 40 °C setpoint gave `slice-reboot` `re-asserted`, and the relay resumed |
+| E-stop pressed and released resumes nothing | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Fail for an e-stop that cuts backplane power: on release the relay resumes at the old setpoint (#62). The ESTOP-pin e-stop is not tested on this rig |
+| Stop-all from the UI, the API and `systemctl stop` | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass, all three. `systemctl --user stop` of a transient `systemd-run` unit (none ships yet, #29): stop-all 91 ms later, and the relay went off at once |
+| Time from stop-all to the relay off, on a heating RLHT output (#51) | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: relay off at once, by eye. The API answered in 91 ms, and a status read 1 s later showed `on_ms 0`. Relay only, no heater wired |
+| Each EZO family reads, with temperature compensation applied | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | EZO pH 2.15, DO 2.17 | pH and DO read, exit 0. Compensation not tested: no RTD on this rig |
 | Each EZO family calibrated from the CLI | | | | | |
-| A run recorded and exported from the CLI and the API | | | | | |
-| The API from another machine on the lab network, signed in | | | | | |
-| A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | |
+| A run recorded and exported from the CLI and the API | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | API pass: a 93 s run ended `stopped`. Its export holds `readings.csv` (524 rows, each with its unit), `events.csv` and `run.json`. CLI not run |
+| The API from another machine on the lab network, signed in | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: a wrong password was refused (401). Signed in, the UI set a setpoint and ran Stop all |
+| A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | Waits on #28 |
 
 ## Preparing a Pi
 
