@@ -25,15 +25,13 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
-import sqlite3
 import threading
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import AbstractContextManager, asynccontextmanager
 from dataclasses import asdict
 from importlib.metadata import version
 from typing import Annotated, Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi import Path as PathParam
@@ -42,139 +40,31 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
+from openreactor import ui
 from openreactor.auth import verify_password
 from openreactor.config import Config
-from openreactor.controller import ControllerClosed
-from openreactor.ezo import EzoDeviceError, EzoStatusError
+from openreactor.errors import ERRORS, error_detail
 from openreactor.rlht import SliceStatus
-from openreactor.service import (
-    Conflict,
-    DeviceFailed,
-    Invalid,
-    NotFound,
-    Service,
-    Unavailable,
-    Unreachable,
-)
-from openreactor.storage import StorageError
 
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-SESSION_COOKIE = "openreactor_session"
-SESSION_MAX_AGE_S = 12 * 60 * 60
-# No request body here is more than a few hundred bytes; anything far
-# larger is refused before it is read, signed in or not.
-MAX_BODY_BYTES = 64 * 1024
+# The tests import it from here.
+from openreactor.security import MAX_BODY_BYTES as MAX_BODY_BYTES
+from openreactor.security import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE_S,
+    BodyLimit,
+    Busy,
+    LoopbackHostsOnly,
+    authorize,
+    busy,
+    check_origin,
+    client,
+    forbidden,
+    same_origin,
+)
+from openreactor.service import Service
+
 # How long a password check may wait for another client's to finish.
 CHECK_WAIT_S = 2.0
-
-
-class LoopbackHostsOnly:
-    """Refuse any request whose Host is not a loopback name.
-
-    Without a password the API trusts whoever reaches it, which only holds
-    under a loopback Host. A page using DNS rebinding sends another.
-    """
-
-    def __init__(self, app: Any):
-        self.app = app
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
-            host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
-            try:
-                name = (urlsplit(f"//{host}").hostname or "").lower()
-            except ValueError:  # such as "[::1" with no closing bracket
-                name = ""
-            if name not in LOOPBACK_HOSTS:
-                await JSONResponse({"detail": "unknown Host"}, status_code=403)(
-                    scope, receive, send
-                )
-                return
-        await self.app(scope, receive, send)
-
-
-class TooLarge(HTTPException):
-    """Signal from receive() that the request body is over the limit.
-
-    As an HTTPException, FastAPI's body parsing passes it on as a 413
-    instead of turning it into a 400.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(status_code=413, detail="request body too large")
-
-
-def _too_large(e: BaseException) -> bool:
-    if isinstance(e, TooLarge):
-        return True
-    return isinstance(e, BaseExceptionGroup) and any(_too_large(x) for x in e.exceptions)
-
-
-class BodyLimit:
-    """Refuse a request body over ``limit`` bytes with 413.
-
-    It checks the Content-Length before reading anything, then counts the
-    body as it arrives.
-    """
-
-    def __init__(self, app: Any, limit: int = MAX_BODY_BYTES):
-        self.app = app
-        self.limit = limit
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        for name, value in scope["headers"]:
-            if name == b"content-length" and (not value.isdigit() or int(value) > self.limit):
-                await self._refuse(send)
-                return
-        received = 0
-        started = False
-
-        async def counted_receive() -> Any:
-            # A body sent without a Content-Length is counted as it comes.
-            nonlocal received
-            message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > self.limit:
-                    raise TooLarge
-            return message
-
-        async def tracked_send(message: Any) -> None:
-            nonlocal started
-            started = started or message["type"] == "http.response.start"
-            await send(message)
-
-        try:
-            await self.app(scope, counted_receive, tracked_send)
-        except BaseException as e:
-            # Answer here unless a route already turned it into its own 413.
-            if not _too_large(e) or started:
-                raise
-            await self._refuse(send)
-
-    @staticmethod
-    async def _refuse(send: Any) -> None:
-        body = b'{"detail":"request body too large"}'
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
-                    (b"connection", b"close"),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-class Busy(Exception):
-    """Another password check is running."""
 
 
 class Gate:
@@ -243,73 +133,6 @@ class Gate:
     def sign_out(self, session: object) -> None:
         if isinstance(session, str):
             self._sessions.discard(session)
-
-
-def _bearer(request: Request) -> str | None:
-    header = request.headers.get("authorization", "")
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token.strip()
-
-
-def _same_origin(request: Request, origin: str) -> bool:
-    own = f"{request.url.scheme}://{request.headers.get('host', '')}"
-    return origin.lower() == own.lower()
-
-
-def _forbidden(detail: str) -> HTTPException:
-    return HTTPException(status_code=403, detail=detail)
-
-
-def _client(request: Request) -> str:
-    return request.client.host if request.client else ""
-
-
-def _busy() -> HTTPException:
-    return HTTPException(status_code=429, detail="another password check is running; try again")
-
-
-def _unauthorized() -> HTTPException:
-    # No WWW-Authenticate: Basic, which would make a browser prompt.
-    return HTTPException(status_code=401, detail="sign in, or send Authorization: Bearer")
-
-
-def _check_origin(request: Request, *, by_cookie: bool) -> None:
-    if request.method in SAFE_METHODS:
-        return
-    origin = request.headers.get("origin")
-    if origin is None:
-        if by_cookie:
-            raise _forbidden("a signed-in request that changes state must carry an Origin header")
-        return
-    if not _same_origin(request, origin):
-        raise _forbidden(f"cross-site request from {origin} refused")
-
-
-def authorize(request: Request) -> None:
-    """Raise unless the request may use the API.
-
-    Every API route and the API docs depend on this.
-    """
-    gate: Gate = request.app.state.gate
-    if gate.open:
-        _check_origin(request, by_cookie=False)
-        return
-    token = _bearer(request)
-    if token is not None:
-        # A script sends the password itself, not an ambient credential a
-        # browser adds, so no Origin rule is needed.
-        try:
-            ok = gate.check(token, _client(request))
-        except Busy:
-            raise _busy() from None
-        if not ok:
-            raise _unauthorized()
-        return
-    if not gate.signed_in(request.session.get("id")):
-        raise _unauthorized()
-    _check_origin(request, by_cookie=True)
 
 
 def service(request: Request) -> Service:
@@ -471,29 +294,6 @@ def delete_calibration(device: str, svc: Svc) -> CalibrationStatus:
     return CalibrationStatus(device=device, status=svc.clear_calibration(device))
 
 
-ERRORS: tuple[tuple[type[Exception], int], ...] = (
-    (NotFound, 404),
-    (Conflict, 409),
-    (Unavailable, 409),
-    (Invalid, 422),
-    (Unreachable, 503),
-    # The circuit refused the command or could not be reached.
-    (EzoStatusError, 502),
-    (EzoDeviceError, 502),
-    (DeviceFailed, 502),
-    (StorageError, 503),
-    (sqlite3.Error, 503),
-    (ControllerClosed, 503),
-    (FutureTimeout, 504),
-)
-
-
-def error_detail(exc: Exception) -> str:
-    if isinstance(exc, EzoStatusError):
-        return f"the circuit answered {exc.outcome.value}"
-    return str(exc) or "the controller did not finish in time"
-
-
 def wants_html(request: Request) -> bool:
     """Return whether a browser submitted a form, rather than a script or htmx."""
     return "text/html" in request.headers.get("accept", "") and "hx-request" not in request.headers
@@ -553,7 +353,8 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
     app.include_router(api)
     if app.state.gate.open:
         app.add_middleware(LoopbackHostsOnly)
-    # Added last, so it is outermost: ahead of the session and every route.
+    # Added after the session, so it runs ahead of it and of every route.
+    # Only NoFraming, which ui.install adds, sits outside it.
     app.add_middleware(BodyLimit)
 
     @app.get("/api/v1/openapi.json", include_in_schema=False, dependencies=[Depends(authorize)])
@@ -563,19 +364,17 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
     @app.post("/login", status_code=204, include_in_schema=False)
     async def login(request: Request) -> Response:
         origin = request.headers.get("origin")
-        if origin is not None and not _same_origin(request, origin):
-            raise _forbidden(f"cross-site request from {origin} refused")
+        if origin is not None and not same_origin(request, origin):
+            raise forbidden(f"cross-site request from {origin} refused")
         password = await _password_from(request)
         gate: Gate = app.state.gate
         # scrypt is slow on purpose; keep it off the event loop.
         try:
-            ok = await run_in_threadpool(gate.check, password, _client(request))
+            ok = await run_in_threadpool(gate.check, password, client(request))
         except Busy:
-            raise _busy() from None
+            raise busy() from None
         if not ok:
             if wants_html(request):
-                from openreactor import ui
-
                 return ui.login_page(request, error="Wrong password.", status_code=401)
             raise HTTPException(status_code=401, detail="wrong password")
         gate.sign_out(request.session.get("id"))
@@ -589,7 +388,7 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
     def logout(request: Request) -> Response:
         # Another site, or another service on this host, cannot sign you out.
         session = request.session.get("id")
-        _check_origin(request, by_cookie=app.state.gate.signed_in(session))
+        check_origin(request, by_cookie=app.state.gate.signed_in(session))
         app.state.gate.sign_out(session)
         request.session.clear()
         if wants_html(request):
@@ -602,8 +401,6 @@ def create_app(config: Config, start: Callable[[], AbstractContextManager[Servic
             return JSONResponse({"detail": error_detail(exc)}, status_code=code)
 
         app.add_exception_handler(error, handler)
-
-    from openreactor import ui
 
     ui.install(app)
     return app

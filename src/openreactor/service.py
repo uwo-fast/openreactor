@@ -14,8 +14,8 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future
-from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from contextlib import closing, contextmanager, nullcontext
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar
 
@@ -75,6 +75,22 @@ def _wait(future: Future[_T]) -> _T:
         return future.result(timeout=ACTION_TIMEOUT_S)
     except TimeoutError:
         raise TimeoutError("the controller started this but has not finished it") from None
+
+
+def setpoint_limit(ch: ChannelConfig) -> float:
+    """Return the highest setpoint, in °C, that ``ch`` accepts."""
+    return ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
+
+
+def _problem_text(p: Result) -> str:
+    """Return a start-up problem as its outcome, then its detail if any."""
+    return f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+
+
+def _end_status(recorder: Recorder | None) -> str:
+    """Return how a run ends: "interrupted" if it stopped recording."""
+    failed = recorder.failed if recorder is not None else None
+    return "stopped" if failed is None else "interrupted"
 
 
 class NotFound(Exception):
@@ -166,15 +182,7 @@ class Service:
             if item.outcome is not Outcome.OK:
                 for name, state in list(self._latest.items()):
                     if name == item.channel or name.startswith(f"{item.channel}."):
-                        self._latest[name] = ChannelState(
-                            name,
-                            state.device,
-                            kind,
-                            state.unit,
-                            state.value,
-                            state.time,
-                            item.outcome.value,
-                        )
+                        self._latest[name] = replace(state, kind=kind, outcome=item.outcome.value)
                 return
             for v in item.values:
                 name = f"{item.channel}.{v.field}" if v.field else item.channel
@@ -188,8 +196,7 @@ class Service:
             if d.kind == "dcmt":
                 status = "DCMT slices are not supported yet"
             elif d.name in self._problems:
-                p = self._problems[d.name]
-                status = f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+                status = _problem_text(self._problems[d.name])
             elif d.name in self._slices and self._slices[d.name].unreachable:
                 status = "unreachable: 3 polls failed in a row"
             elif d.name in self._slices and self._slices[d.name].estop:
@@ -211,7 +218,7 @@ class Service:
             p = self._problems.get(name)
             if p is None:
                 return None
-            return f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
+            return _problem_text(p)
 
         def snapshot() -> list[SliceStatus]:
             out: list[SliceStatus] = []
@@ -267,7 +274,7 @@ class Service:
             raise Unavailable(
                 f"{ch.name} is on a {d.kind} slice; DCMT slices are not supported yet"
             )
-        limit = ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
+        limit = setpoint_limit(ch)
         if not math.isfinite(value) or value < 0:
             raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
         deci = round(value * 10)
@@ -359,7 +366,7 @@ class Service:
                 raise Conflict("no run is recording")
             run, store, recorder = self._run, self._store, self._recorder
             self.controller.unsubscribe(recorder)
-            status = "stopped" if recorder.failed is None else "interrupted"
+            status = _end_status(recorder)
             store.setup()
             store.end_run(run, status)
             self._run, self._recorder = None, None
@@ -370,28 +377,24 @@ class Service:
     def runs(self) -> list[Run]:
         if not self._database.exists():
             return []
-        store = Store(self._database, read_only=True)
-        try:
+        with closing(Store(self._database, read_only=True)) as store:
             return store.runs()
-        finally:
-            store.close()
 
     def export(self, run: int) -> bytes:
         if not self._database.exists():
             raise NotFound(f"no run {run}")
-        store = Store(self._database, read_only=True)
-        try:
-            with tempfile.TemporaryDirectory() as d:
-                out = Path(d) / "run.zip"
-                try:
-                    store.export(run, out)
-                except StorageError as e:
-                    if store.run(run) is None:
-                        raise NotFound(f"no run {run}") from e
-                    raise
-                return out.read_bytes()
-        finally:
-            store.close()
+        with (
+            closing(Store(self._database, read_only=True)) as store,
+            tempfile.TemporaryDirectory() as d,
+        ):
+            out = Path(d) / "run.zip"
+            try:
+                store.export(run, out)
+            except StorageError as e:
+                if store.run(run) is None:
+                    raise NotFound(f"no run {run}") from e
+                raise
+            return out.read_bytes()
 
     # EZO calibration
 
@@ -443,9 +446,8 @@ class Service:
         finally:
             try:
                 if self._run is not None and self._store is not None:
-                    failed = self._recorder.failed if self._recorder else None
                     self._store.setup()
-                    self._store.end_run(self._run, "stopped" if failed is None else "interrupted")
+                    self._store.end_run(self._run, _end_status(self._recorder))
                     self._run = None
             finally:
                 if self._store is not None:
