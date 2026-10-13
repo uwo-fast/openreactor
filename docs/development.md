@@ -35,6 +35,38 @@ compiler.
 | `just build` | Build the sdist and the wheel into `dist/`. |
 | `just clean` | Remove the environment, and the build and tool caches. |
 
+## How the code fits together
+
+```mermaid
+flowchart TD
+    browser["Browser"] -->|"pages and htmx"| ui["ui.py"]
+    client["Script"] -->|"/api/v1"| web["web.py"]
+    ui --> service["service.py"]
+    web --> service
+    service -->|"commands"| controller["controller.py<br/>one thread, 100 ms tick"]
+    cli["cli.py<br/>read, run, ezo cal"] --> controller
+    controller --> rlht["rlht.py<br/>RLHT slices"]
+    controller --> ezo["ezo.py<br/>EZO circuits"]
+    rlht -->|"crumbs-i2c"| bus[("I2C bus")]
+    ezo -->|"ezo-driver"| bus
+    controller -->|"readings and events"| recorder["storage.py<br/>Recorder"]
+    recorder --> db[("SQLite")]
+    service -->|"list and export, read-only"| db
+```
+
+- `controller.py` is the only code that touches the bus. Its thread runs
+  every device operation, so other threads send it commands and get a
+  `Future` back.
+- `serve` runs `web.py` and `ui.py` over `service.py`. `security.py` checks
+  every request first, and `errors.py` turns the service's errors into
+  HTTP statuses.
+- `read`, `run` and `ezo cal` build a controller in `cli.py` and use it
+  directly, without the service.
+- Only the controller's thread writes to the database, through the
+  `Recorder` it publishes to.
+- `lock.py` keeps a second `serve` or CLI command from opening the bus while
+  one already has it.
+
 ## Tests
 
 The tests run against fake devices, so they need no hardware. They cannot
