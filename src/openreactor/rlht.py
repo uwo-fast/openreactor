@@ -1,29 +1,9 @@
-"""RLHT heater slices over CRUMBS: start-up, the safe state, and the poll.
+"""Start, supervise and poll RLHT heater slices over CRUMBS.
 
-A slice runs its own heater PID; openreactor sets it up safely, keeps its
-command watchdog fed, and reads its state. Frames go through crumbs-i2c, and
-payloads through the bread-crumbs-contracts codec.
-
-Start-up, in order, before the controller ticks (#24):
-
-1. Version: the reply must come from an RLHT (the reply's type is checked),
-   built with CRUMBS 0.12.0 or later, with a compatible RLHT module version.
-2. Capabilities.
-3. The safe state.
-4. The watchdog, if the slice has the capability: armed with the
-   controller's timeout and confirmed with GET_WATCHDOG. A slice without it
-   is read-only unless its config sets ``allow_unprotected``.
-5. What the config sets, each only if the slice can take it: closed-loop
-   mode, periods, thermocouple select, gains.
-
-The safe state is always SET_SETPOINTS(0, 0) and then SET_OPEN_DUTY(0, 0),
-both sent even if the first fails. It never switches the slice to open loop.
-
-The poll is GET_STATE every ``slice_poll_s``, split across two controller
-ticks like an EZO read: SET_REPLY on one, the read on the next, so a tick
-never waits on the bus. The firmware feeds its watchdog when it builds a
-reply, so the poll is also the keep-alive, and a poll whose read fails does
-not feed it.
+Each slice runs its own heater PID. This module starts a slice safely,
+keeps its command watchdog fed by polling it, re-asserts its settings after
+a watchdog trip, and turns its state into readings. Frames go through
+crumbs-i2c, and payloads through the bread-crumbs-contracts codec.
 """
 
 from __future__ import annotations
@@ -88,21 +68,26 @@ from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Event
 from openreactor.ezo import Outcome, Result, Value
 
-#: Attempts per poll: a failed read (or SET_REPLY) is retried twice (#24).
+#: Attempts at each SET_REPLY or read in a poll cycle before the cycle ends.
 READS_PER_POLL = 3
-#: Polls that fail in a row before the slice is reported unreachable.
+#: Failures in a row before giving up: state polls before the slice is
+#: reported unreachable, and watchdog checks before they are reported as
+#: failing and are no longer retried early.
 UNREACHABLE_AFTER = 3
-#: A GET_WATCHDOG check after every this many state polls.
+#: Good state polls between routine GET_WATCHDOG checks.
 WATCHDOG_EVERY = 5
 
 
 class SliceError(Exception):
-    """A slice that cannot be used: it did not answer, is not an RLHT, is
-    too old, or would not arm its watchdog."""
+    """Raised when a slice cannot be used.
+
+    It did not answer, is not an RLHT, runs firmware that is too old, or
+    would not arm its watchdog.
+    """
 
 
 class SendFailed(SliceError):
-    """A command that may or may not have reached the slice."""
+    """Raised when a command may or may not have reached the slice."""
 
 
 @dataclass(frozen=True)
@@ -112,7 +97,7 @@ class OutputStatus:
     output: int
     channel: str | None  # the config's channel on this output, if any
     tc: int
-    temperature_c: float | None  # None: no thermocouple reading
+    temperature_c: float | None  # None when there is no thermocouple reading
     setpoint_c: float | None
     on_ms: int
     period_ms: int
@@ -128,7 +113,7 @@ class WatchdogStatus:
 
 @dataclass(frozen=True)
 class SliceStatus:
-    """What a running controller knows about one slice."""
+    """One slice as the running controller last saw it."""
 
     name: str
     address: int
@@ -139,7 +124,8 @@ class SliceStatus:
     estop: bool | None = None
     outputs: tuple[OutputStatus, ...] = ()
     watchdog: WatchdogStatus | None = None
-    # The setpoints the controller wants, in °C; None for a slice not in use.
+    # The setpoints the controller wants, in °C; None for a slice it does
+    # not drive or could not report on.
     desired_c: tuple[float, float] | None = None
 
 
@@ -184,15 +170,21 @@ def _watchdog(w: BreadWatchdogResult) -> WatchdogStatus:
 
 
 class SliceBusy(Exception):
-    """The slice cannot take a setpoint as it is: its e-stop is held, or it
-    is read-only."""
+    """Raised when the slice cannot take a setpoint now.
+
+    Its e-stop is held, it is read-only, or a check of setpoints that
+    drifted from openreactor's is still pending.
+    """
 
 
 class SlicePort(Protocol):
-    """One slice on the bus. ``stage`` asks for a reply (SET_REPLY);
-    ``read`` reads it and checks it is the reply asked for. ``query`` does
-    both with a pause, retrying a corrupt reply or a device that did not
-    answer; it is for start-up, which may wait."""
+    """Send commands to one slice on the bus and read its replies.
+
+    ``stage`` asks for a reply (SET_REPLY), and ``read`` reads it and checks
+    it is the reply asked for. ``query`` does both with a pause and retries
+    a corrupt reply or a device that did not answer; start-up uses it
+    because it may wait.
+    """
 
     def send(self, opcode: int, payload: bytes) -> None: ...
 
@@ -230,7 +222,7 @@ class CrumbsPort:
 
 
 class RlhtSlice:
-    """An RLHT slice: an actuator for stop-all, and a source of readings."""
+    """One RLHT slice, which stop-all commands and the poll reads."""
 
     def __init__(
         self,
@@ -255,8 +247,8 @@ class RlhtSlice:
         self.identified = False
         self.started = False
         self.protected = False
-        # Read-only: unprotected and not allowed to be; never commanded
-        # beyond the safe state.
+        # Set when the slice has no command watchdog and its config does not
+        # allow that. A read-only slice is sent the safe state and nothing else.
         self.read_only = False
         self._next_poll = 0.0
         self._staged_at = 0.0
@@ -270,7 +262,8 @@ class RlhtSlice:
         self._failed_checks = 0
         # The desired setpoints the last GET_STATE disagreed with, if it did.
         self._drift_against: list[int] | None = None
-        # The last drop's result, so a drop that keeps failing is told once.
+        # The last drop's result, so a drop repeated every poll is reported
+        # only when its result changes.
         self._drop_result: str | None = None
         self._trip_count = 0
         self._last_state: RlhtStateResult | None = None
@@ -278,24 +271,34 @@ class RlhtSlice:
         self._version: str | None = None
         self.unreachable = False
         self.estop = False
-        # What openreactor wants the setpoints to be, in deci-degrees; set by
-        # the operator, sent again after a trip or a reboot.
+        # The setpoints openreactor wants, in tenths of a degree. The operator
+        # sets them, and a re-assert sends them again after a watchdog trip.
         self.setpoints_deci = [0, 0]
 
-    # Start-up: blocking, before the controller ticks.
+    # Start-up blocks, and runs before the controller starts ticking.
 
     def _query(self, opcode: int) -> bytes:
         return self.port.query(opcode)
 
     def start(self) -> list[Event]:
-        """Check, make safe, arm and configure the slice. Raises SliceError
-        if it cannot be used."""
+        """Check, make safe, arm and configure the slice.
+
+        The steps run in this order. GET_VERSION must come from an RLHT
+        built with CRUMBS 0.12.0 or later and a compatible RLHT module
+        version. GET_CAPS follows, then the safe state. A slice with the
+        watchdog capability has it armed with the controller's timeout and
+        confirmed with GET_WATCHDOG; one without it is read-only, and left
+        unconfigured, unless its config sets ``allow_unprotected``. Last,
+        ``_configure`` sends what the config sets.
+
+        Raise SliceError if the slice cannot be used.
+        """
         try:
             version = bread_parse_version(self._query(BREAD_OP_GET_VERSION))
         except CrumbsError as e:
             raise SliceError(f"no RLHT version reply: {e}") from e
-        # It answered as an RLHT: from here on it is in stop-all, even if a
-        # later step fails.
+        # It answered as an RLHT, so stop-all includes it from here on, even
+        # if a later step fails.
         self.identified = True
         if bread_check_crumbs_compat(version.crumbs_ver) != 0:
             raise SliceError(
@@ -360,12 +363,15 @@ class RlhtSlice:
         ]
 
     def _configure(self, state: RlhtStateResult, *, setpoints: bool = False) -> None:
-        """In #24's order: closed-loop mode, the desired setpoints (with
-        ``setpoints``, for a re-assert; zero while an e-stop is held), periods,
-        thermocouple select, gains. Each only if the slice can take it, and
-        periods and gains only if the config sets them. An output with no
-        channel keeps the thermocouple and period the slice has; gains go only
-        when the config sets both outputs'."""
+        """Send the config's settings, each only if the slice can take it.
+
+        The order is closed-loop mode, the desired setpoints (only with
+        ``setpoints``, for a re-assert, and zero while an e-stop is held),
+        periods, thermocouple select, then gains. Periods go only if the
+        config sets one, and gains only if it sets all three for both
+        outputs. An output with no channel keeps the slice's thermocouple
+        and period.
+        """
         flags = self.caps.flags if self.caps else 0
         by_output = {ch.output: ch for ch in self.device.channels}
 
@@ -388,19 +394,23 @@ class RlhtSlice:
             and len(gains) == 2
             and all(ch.kp is not None and ch.ki is not None and ch.kd is not None for ch in gains)
         ):
-            # Both outputs' gains go in one command and cannot be read back,
-            # so they are sent only when the config gives all six: never a
-            # filled-in value (check-config refuses anything less).
+            # SET_PID carries both outputs' gains, and the slice cannot report
+            # its current ones, so a missing gain has no value to fill in.
+            # check-config refuses a partial set.
             x10 = [round(g * 10) for ch in gains for g in (ch.kp, ch.ki, ch.kd) if g is not None]
             self.port.send(RLHT_OP_SET_PID, rlht_send_set_pid_x10(*x10))
 
     # Stop-all
 
     def send_safe(self) -> None:
-        """Setpoints to zero, then open-loop duty to zero: both, always, even
-        if the first fails or is interrupted. Open-loop duty does nothing in
-        closed loop; it stops a slice someone left in open loop. The desired
-        setpoints go to zero too, so no later re-assert restarts heating."""
+        """Send the safe state: zero setpoints, then zero open-loop duty.
+
+        The second is sent even if the first fails or is interrupted.
+        Open-loop duty does nothing in closed loop, but stops a slice someone
+        left in open loop; this never switches the slice to open loop. The
+        desired setpoints go to zero too, so no later re-assert restarts
+        heating.
+        """
         self.setpoints_deci = [0, 0]
         try:
             self.port.send(RLHT_OP_SET_SETPOINTS, rlht_send_set_setpoints(0, 0))
@@ -408,8 +418,11 @@ class RlhtSlice:
             self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
 
     def status(self, why: str | None = None) -> SliceStatus:
-        """What the controller last saw. Called on the controller's thread;
-        ``why`` is the start-up problem of a slice that did not start."""
+        """Return the slice's status as of the last poll.
+
+        Call it on the controller's thread. ``why`` is the start-up problem
+        of a slice that did not start.
+        """
         if why is not None:
             state = why
         elif not self.started:
@@ -437,10 +450,11 @@ class RlhtSlice:
         )
 
     def set_setpoint(self, output: int, deci: int) -> None:
-        """An operator's setpoint for one output, in tenths of a degree,
-        sent at once. Called on the controller's thread. The desired
-        setpoints, which a re-assert sends again, change only once it is
-        sent."""
+        """Send an operator's setpoint for one output, in tenths of a degree.
+
+        Call it on the controller's thread. The desired setpoints, which a
+        re-assert sends again, change only once the send succeeds.
+        """
         if not self.started:
             raise SliceError(f"{self.name} did not finish start-up")
         if self.read_only:
@@ -452,8 +466,9 @@ class RlhtSlice:
         if self.unreachable:
             raise SliceError(f"{self.name} is unreachable: {UNREACHABLE_AFTER} polls failed")
         if self._drift_against is not None:
-            # Until the check says why, a new setpoint would be judged against
-            # a stale reading, and would carry the other output's old one.
+            # Until the pending check explains the drift, a new setpoint would
+            # be judged against a stale reading and would carry the other
+            # output's old setpoint with it.
             raise SliceBusy(
                 f"{self.name} runs other setpoints than wanted, and is being checked; "
                 "set it again in a moment"
@@ -466,18 +481,18 @@ class RlhtSlice:
             raise SendFailed(f"{self.name}: {_describe(e)}") from e
         self.setpoints_deci = wanted
 
-    # The poll: called each controller tick, never waits.
-    #
-    # Each poll slot runs one cycle: GET_STATE, and after every fifth good
-    # state poll (or when a check is owed) GET_WATCHDOG on the following
-    # tick. So a watchdog check never displaces a state poll, and any
-    # re-assert comes right after a GET_STATE that showed whether the slice
-    # is held by its e-stop. A failure ends the cycle; the next one waits for
-    # its slot.
+    # The poll runs on every controller tick and never waits: it stages a
+    # query (SET_REPLY) on one tick and reads it on a later one. Each poll
+    # slot runs one cycle: GET_STATE, then GET_WATCHDOG on the next tick when
+    # a check is owed or WATCHDOG_EVERY good state polls have passed. So a
+    # watchdog check never displaces a state poll, and any re-assert comes
+    # right after a GET_STATE that showed whether the e-stop is held. A
+    # failure ends the cycle; the next waits for its slot. The firmware feeds
+    # its watchdog when it builds a reply, so the poll is also the
+    # keep-alive, and a poll whose read fails does not feed it.
 
     def advance(self, now: float) -> list[Result | Event]:
-        """Do whatever is due at ``now``: stage a query, or read the one
-        staged a tick ago. Returns readings and supervision events."""
+        """Stage or read whatever is due at ``now``; return readings and events."""
         if self._phase is None:
             if now < self._next_poll:
                 return []
@@ -532,25 +547,24 @@ class RlhtSlice:
         return []
 
     def _attempt_failed(self, e: BaseException, now: float) -> list[Result | Event]:
-        """A failed stage or read: retried within the cycle, twice (#24);
-        after that the cycle ends, and the next waits for its slot."""
+        """Retry a failed stage or read, up to READS_PER_POLL tries, then end the cycle."""
         self._attempts += 1
         if self._attempts < READS_PER_POLL:
             self._staged = False
             return self._stage(now) if isinstance(e, CrumbsError) else []
         phase, self._phase = self._phase, None
         if phase == "watchdog":
-            # The slice answered GET_STATE this cycle: it is reachable. The
-            # check is owed, after the next cycle's state poll, until it has
-            # failed UNREACHABLE_AFTER times in a row; then it waits for its
-            # usual slot.
+            # The slice answered GET_STATE this cycle, so it is reachable.
+            # Retry the check after the next state poll until it has failed
+            # UNREACHABLE_AFTER times in a row; then report that once and
+            # leave the check to its usual slot.
             self._failed_checks += 1
             if self._failed_checks < UNREACHABLE_AFTER:
                 self._check_owed = True
                 return []
             if self._failed_checks > UNREACHABLE_AFTER:
                 return []
-            # Any confirm pending is lost with it; the next check is fresh.
+            # Drop any pending confirm; the next check that answers is fresh.
             self._confirming = False
             return [
                 Event(
@@ -599,8 +613,8 @@ class RlhtSlice:
         held = bool(state.flags & RLHT_FLAG_ESTOP)
         if held and not self.estop:
             self.estop = True
-            # Nothing resumes after an e-stop until the operator says so;
-            # the stop-all this triggers clears the setpoints too.
+            # Nothing resumes after an e-stop until the operator sets a
+            # setpoint again; the stop-all this event triggers clears them too.
             self.setpoints_deci = [0, 0]
             return [
                 Event(
@@ -630,17 +644,21 @@ class RlhtSlice:
         return []
 
     def _drift(self, state: RlhtStateResult) -> bool:
-        """The slice runs other setpoints than openreactor wants. A held
-        e-stop is handled on its own, and a read-only slice is not ours to
-        set."""
+        """Return whether the slice runs other setpoints than openreactor wants.
+
+        A held e-stop is handled on its own, and a read-only slice is not
+        openreactor's to set, so neither counts.
+        """
         if self.estop or self.read_only:
             return False
         return [state.sp1_deci_c, state.sp2_deci_c] != self.setpoints_deci
 
     def _drifted(self, state: RlhtStateResult) -> list[Result | Event]:
-        """A trip or a reboot zeroes the slice's setpoints, and the watchdog
-        check finds those and re-asserts. So the check comes next, and if it
-        finds neither, ``_supervise`` drops the setpoints."""
+        """Owe a watchdog check when the setpoints drifted, or drop them if no check can run.
+
+        A trip or a reboot zeroes the slice's setpoints, and the check finds
+        either and re-asserts; if it finds neither, ``_supervise`` drops them.
+        """
         if not self._drift(state):
             self._drift_against = None
             self._drop_result = None
@@ -649,14 +667,17 @@ class RlhtSlice:
             self._drift_against = list(self.setpoints_deci)
             self._check_owed = True
             return []
-        self._drift_against = None  # dropped now: no check is pending
+        self._drift_against = None  # no check is pending
         return self._drop(state)
 
     def _drop(self, state: RlhtStateResult) -> list[Result | Event]:
-        """Setpoints that changed with no trip or reboot behind them: an
-        e-stop pressed and released between two polls, a setpoint that
-        reached the slice although sending it failed, or another controller.
-        Nothing resumes until the operator sets a setpoint again."""
+        """Send the safe state after setpoints changed with no trip or reboot.
+
+        The cause may be an e-stop pressed and released between two polls, a
+        setpoint that reached the slice although sending it failed, or
+        another controller. Nothing resumes until the operator sets a
+        setpoint again.
+        """
         ran = f"{state.sp1_deci_c / 10:g} and {state.sp2_deci_c / 10:g} °C"
         wanted = f"{self.setpoints_deci[0] / 10:g} and {self.setpoints_deci[1] / 10:g} °C"
         try:
@@ -666,7 +687,7 @@ class RlhtSlice:
             self.setpoints_deci = [0, 0]
             result = f"error: safe state not sent: {_describe(e)}"
         if result == self._drop_result:
-            return []  # retried each poll; told once
+            return []  # retried each poll, reported once per result
         self._drop_result = result
         return [
             Event(
@@ -683,8 +704,12 @@ class RlhtSlice:
         ]
 
     def _supervise(self, watchdog: BreadWatchdogResult) -> list[Result | Event]:
-        """A trip or a reboot means the slice dropped what it was told:
-        re-assert it once, and check it took in the next cycle."""
+        """Act on a watchdog check.
+
+        A trip or a reboot means the slice dropped what it was told:
+        re-assert it once, and check in the next cycle that it took. With
+        neither, drop setpoints that the last GET_STATE found had drifted.
+        """
         self._failed_checks = 0
         self._last_watchdog = watchdog
         against, self._drift_against = self._drift_against, None
@@ -706,16 +731,16 @@ class RlhtSlice:
             )
             rebooted = watchdog.trip_count < baseline
         else:
-            # Only if the desired setpoints are still the ones that GET_STATE
-            # disagreed with: one set since is judged by the next GET_STATE.
+            # Drop only if the desired setpoints are still the ones GET_STATE
+            # disagreed with; a setpoint set since is judged by the next one.
             last = self._last_state
             if last is None or against is None or against != self.setpoints_deci:
                 return []
             return self._drop(last)
         if rebooted:
-            # A slice whose power was cut, by an e-stop wired to the
-            # backplane among others, reboots: nothing resumes until the
-            # operator sets a setpoint again (#62).
+            # A slice reboots when its power is cut, for instance by an
+            # e-stop wired to the backplane, so nothing resumes until the
+            # operator sets a setpoint again.
             self.setpoints_deci = [0, 0]
             details += "; setpoints stay at 0 until set again"
         if confirming:
@@ -758,9 +783,12 @@ class RlhtSlice:
         ]
 
     def _reassert(self) -> None:
-        """The desired state, in the order #24 gives: mode, setpoints,
-        periods, thermocouples, gains, then the watchdog armed again. Only
-        ever right after a GET_STATE, so a held e-stop is known."""
+        """Send the desired state again, then re-arm the watchdog.
+
+        The settings go in ``_configure``'s order: mode, setpoints, periods,
+        thermocouples, gains. This runs only right after a GET_STATE, so
+        whether the e-stop is held is known.
+        """
         if self.read_only or self._last_state is None:
             return
         self._configure(self._last_state, setpoints=True)
@@ -796,7 +824,7 @@ class RlhtSlice:
 
 
 def _setting(by_output: dict[int, ChannelConfig], output: int, key: str, current: int) -> int:
-    """The config's value for an output, or what the slice has now."""
+    """Return the config's ``key`` for an output, or ``current`` if unset."""
     ch = by_output.get(output)
     value = getattr(ch, key) if ch is not None else None
     return value if isinstance(value, int) else current
@@ -827,11 +855,13 @@ def opened_slices(
     sleep: Callable[[float], None] = time.sleep,
     wall: Callable[[], float] = time.time,
 ) -> Iterator[tuple[list[RlhtSlice], list[Result | Event]]]:
-    """Open each RLHT's bus (one per path, shared) and start each slice.
-    Yields every slice that answered as an RLHT, for stop-all, whether or
-    not its start-up finished (``started`` says which, for polling), and the
-    start-up events and problems. The buses close on the way out; send
-    stop-all before that."""
+    """Open each RLHT's bus and start each slice.
+
+    Slices on the same bus path share one bus. Yield every slice that
+    answered as an RLHT, so stop-all covers it whether or not its start-up
+    finished (``started`` says which to poll), with the start-up events and
+    problems. The buses close on exit, so send stop-all before that.
+    """
     buses: dict[str, Bus] = {}
     slices: list[RlhtSlice] = []
     reports: list[Result | Event] = []
@@ -855,7 +885,6 @@ def opened_slices(
                     reports += rlht.start()
                 finally:
                     if rlht.identified:
-                        # In stop-all whether or not start-up finished.
                         slices.append(rlht)
             except (SliceError, CrumbsError, OSError, ValueError) as e:
                 reports.append(Result(d.name, Outcome.ERROR, detail=_describe(e)))

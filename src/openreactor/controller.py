@@ -1,14 +1,10 @@
-"""The controller: the only owner of the bus.
+"""Own the bus and run every device operation on a 100 ms tick.
 
-Everything that touches a device goes through it. It runs a 100 ms tick on a
-monotonic clock and never blocks inside a tick: EZO reads are split-phase,
-and multi-step commands (calibration, queries) are step generators it resumes
-on later ticks. Other threads talk to it through a command queue and get a
-``Future`` back.
-
-Stop-all is the one thing that must always work: it sends every actuator its
-safe state before anything else can run, a failing actuator or listener does
-not stop the others, and ``close`` sends it and nothing else.
+No tick blocks: EZO reads are split across ticks, and multi-step commands
+are step generators resumed on later ticks. Other threads queue commands and
+get a ``Future`` back. Stop-all must always work: it sends every actuator
+its safe state before anything else can run, one failing actuator or
+listener does not stop the others, and ``close`` sends it and nothing else.
 """
 
 from __future__ import annotations
@@ -32,12 +28,12 @@ _T = TypeVar("_T")
 
 
 class ControllerClosed(Exception):
-    """The controller closed before this command finished."""
+    """Raised when the controller closes before a command finishes."""
 
 
 @dataclass(frozen=True)
 class Event:
-    """Something that happened, for the run log: a stop-all, a command."""
+    """An entry for the run log, such as a stop-all or a command."""
 
     time: float  # wall clock, seconds since the epoch, UTC
     source: str  # "user", "profile" or "system"
@@ -60,10 +56,12 @@ Listener = Callable[["Result | Event"], None]
 
 
 class Polled(Protocol):
-    """A device the controller polls each tick: it does whatever is due at
-    ``now`` without waiting, and returns what it read and what it saw. An
-    ``e-stop`` event with result ``held`` (a slice's own e-stop pressed)
-    makes the controller send stop-all."""
+    """A device the controller polls on every tick.
+
+    ``advance`` does what is due at ``now`` without waiting and returns its
+    readings and events. An ``e-stop`` event with result ``held``, sent when
+    a slice's own e-stop is pressed, makes the controller send stop-all.
+    """
 
     def advance(self, now: float) -> list[Result | Event]: ...
 
@@ -89,8 +87,11 @@ class _CycleRequest:
 
 
 class Controller:
-    """``step`` runs one tick. ``run`` ticks on the calling thread until told
-    to stop; ``start`` runs it on a thread of its own instead."""
+    """Run device work one tick at a time.
+
+    ``step`` runs one tick. ``run`` ticks on the calling thread until told
+    to stop, and ``start`` runs it on a thread of its own instead.
+    """
 
     def __init__(
         self,
@@ -134,8 +135,11 @@ class Controller:
         self._commands.put(remove)
 
     def call(self, work: Callable[[], _T]) -> Future[_T]:
-        """Run ``work`` on the controller's thread at the next tick, for
-        anything that must not race the tick (the run's database writes)."""
+        """Run ``work`` on the controller's thread at the next tick.
+
+        Use it for anything that must not race the tick, such as the run's
+        database writes.
+        """
         future: Future[_T] = Future()
 
         def command() -> None:
@@ -159,15 +163,20 @@ class Controller:
         return future
 
     def run_job(self, channel: str, steps: Steps[_T]) -> Future[_T]:
-        """Run a multi-step command on one EZO circuit. Reads of that circuit
-        wait until it finishes, so the two never interleave on the device."""
+        """Run a multi-step command on one EZO circuit.
+
+        Reads of that circuit wait until it finishes, so the two never
+        interleave on the device.
+        """
         future: Future[_T] = Future()
         self._commands.put(lambda: self._jobs.append(_Job(channel, steps, future)))
         return future
 
     def read_cycle(self, names: Iterable[str] | None = None) -> Future[list[Result]]:
-        """Read ``names`` (default every circuit) once, giving a NOT_READY
-        circuit one retry a full delay later."""
+        """Read ``names`` (default every circuit) once.
+
+        A circuit that answers NOT_READY gets one retry a full delay later.
+        """
         wanted = set(names) if names is not None else {c.name for c in self.reader.channels}
         request = _CycleRequest(wanted, Future())
         self._commands.put(lambda: self._cycles.append(request))
@@ -176,7 +185,7 @@ class Controller:
     # The tick
 
     def step(self) -> None:
-        """One tick. Never sleeps and never waits on a device."""
+        """Run one tick, without sleeping or waiting on a device."""
         self._drain_commands()
         now = self._clock()
         self._advance_jobs(now)
@@ -204,7 +213,7 @@ class Controller:
             command()
 
     def publish(self, item: Result | Event) -> None:
-        """Publish from work run by ``call``, on the controller's thread."""
+        """Send ``item`` to the listeners from work run by ``call``."""
         self._publish(item)
 
     def _publish(self, item: Result | Event) -> None:
@@ -217,8 +226,11 @@ class Controller:
                 log.exception("a listener failed on %r", item)
 
     def _stop_all(self, source: str, future: Future[list[Event]] | None = None) -> list[Event]:
-        """Send every actuator its safe state, then report. An actuator that
-        fails, or an interrupt while one is sent, never skips the others."""
+        """Send every actuator its safe state, then report.
+
+        An actuator that fails, or an interrupt while one is sent, never
+        skips the others.
+        """
         events: list[Event] = []
         interrupted: BaseException | None = None
         for actuator in self.actuators:
@@ -315,8 +327,11 @@ class Controller:
     # Driving the tick
 
     def run(self, until: Callable[[], bool], *, keep_going: bool = False) -> None:
-        """Tick every 100 ms on the calling thread until ``until()``. With
-        ``keep_going``, a tick that raises is logged and ticking continues."""
+        """Tick every 100 ms on the calling thread until ``until()`` is true.
+
+        With ``keep_going``, a tick that raises is logged and ticking
+        continues.
+        """
         # Ticks are start + n * TICK_S, so they never drift. A tick that
         # overruns is not made up; the next starts on the next boundary.
         start = self._clock()
@@ -335,17 +350,22 @@ class Controller:
             self._sleep(start + n * TICK_S - now)
 
     def wait(self, future: Future[_T]) -> _T:
-        """Tick on the calling thread until ``future`` is done. Not for use
-        while ``start`` has the controller ticking on its own thread."""
+        """Tick on the calling thread until ``future`` is done.
+
+        Do not call it while ``start`` has the controller ticking on its own
+        thread.
+        """
         if self._thread is not None:
             raise RuntimeError("the controller is ticking on its own thread; use the future")
         self.run(future.done)
         return future.result()
 
     def read_once(self) -> list[Result]:
-        """Read every circuit once, on the calling thread. RTDs used for
-        compensation are read first, so pH, EC and DO compensate with this
-        reading's temperature."""
+        """Read every circuit once, on the calling thread.
+
+        RTDs used for compensation are read first, so pH, EC and DO
+        compensate with this reading's temperature.
+        """
         channels = [c for c in self.reader.channels if c.enabled]
         sources = {c.device.temp_comp for c in channels if c.device.temp_comp}
         first = self.wait(self.read_cycle(sources)) if sources else []
@@ -357,10 +377,9 @@ class Controller:
         if self._thread is not None:
             raise RuntimeError("the controller is already running")
         # A daemon thread, so a device that hangs can never keep the process
-        # alive after close() gives up on it.
+        # alive after close() gives up on it. keep_going, because a dead tick
+        # thread would leave stop-all unanswered.
         self._thread = threading.Thread(
-            # A dead tick thread would leave stop-all unanswered, so a tick
-            # that fails is logged and the next one runs.
             target=self.run,
             args=(self._stop.is_set,),
             kwargs={"keep_going": True},
@@ -370,8 +389,11 @@ class Controller:
         self._thread.start()
 
     def _shutdown(self) -> list[Event]:
-        """Send stop-all and cancel everything outstanding, nothing else: a
-        half-finished calibration must not send its next command."""
+        """Send stop-all and cancel everything outstanding.
+
+        Nothing else is sent, so a half-finished calibration never sends its
+        next command.
+        """
         self._auto_read = False
         jobs, cycles = self._jobs, self._cycles
         self._jobs, self._cycles = [], []
@@ -389,8 +411,10 @@ class Controller:
             self._cycles.clear()
 
     def close(self, timeout_s: float = 5.0) -> list[Event]:
-        """Send stop-all and stop ticking. Call before the bus is closed.
-        Calling it again does nothing."""
+        """Send stop-all and stop ticking.
+
+        Call it before the bus is closed. A second call does nothing.
+        """
         if self._closed:
             return []
         self._closed = True

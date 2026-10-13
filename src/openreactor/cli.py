@@ -1,3 +1,9 @@
+"""The openreactor command line: check configs, read sensors, record runs, serve.
+
+Each device command takes the machine-wide controller lock, opens the
+devices through one Controller, and sends stop-all before it exits.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -69,8 +75,10 @@ def open_port(device: DeviceConfig) -> EzoPort:
 
 
 def actuators(config: Config) -> list[Actuator]:
-    """Outputs stop-all makes safe besides the slices, which add themselves.
-    Tests replace this with fakes."""
+    """Return the outputs stop-all makes safe, other than the RLHT slices.
+
+    The slices add themselves. Tests replace this with fakes.
+    """
     return []
 
 
@@ -86,11 +94,12 @@ GRACEFUL_SHUTDOWN_S = 5
 
 
 def run_server(app: FastAPI, host: str, port: int) -> None:
-    """Serve ``app`` until SIGINT or SIGTERM. Tests replace this. One
-    process: the controller and its lock live in it.
+    """Serve ``app`` until SIGINT or SIGTERM.
 
-    The port is bound before the app starts, so a port in use is an error
-    before any device is opened."""
+    The controller and its lock live in this process. The port is bound
+    before the app starts, so a port in use is an error before any device
+    is opened. Tests replace this.
+    """
     import socket
 
     import uvicorn
@@ -186,8 +195,11 @@ def _print(item: Result | Event) -> None:
 
 
 class _Stop(BaseException):
-    """SIGTERM, handled like Ctrl-C: nothing on the way catches it as an
-    ordinary error."""
+    """Raised on SIGTERM so that it is handled like Ctrl-C.
+
+    It is not an Exception, so nothing on the way catches it as an ordinary
+    error.
+    """
 
 
 def _on_sigterm(signum: int, frame: FrameType | None) -> None:
@@ -202,10 +214,13 @@ def _controller(
     auto_read: bool = False,
     with_slices: bool = False,
 ) -> Iterator[tuple[Controller, list[Result | Event]]]:
-    """Take the lock, open the circuits (and, ``with_slices``, start the
-    RLHT slices), check them, and yield a controller with the start-up
-    problems and events. On the way out, even on Ctrl-C or SIGTERM, stop-all
-    is sent before anything is closed."""
+    """Take the lock, open and check the devices, and yield a controller.
+
+    The EZO circuits are always opened; the RLHT slices are started only
+    with ``with_slices``. The controller comes with the start-up problems
+    and events. On the way out, even on Ctrl-C or SIGTERM, stop-all is sent
+    before anything is closed.
+    """
     with ControllerLock(lock_path):
         channels: list[EzoChannel] = []
         problems: list[Result | Event] = []
@@ -245,8 +260,11 @@ def _controller(
 
 
 def _device_command(run: Callable[[argparse.Namespace, Config], int]):
-    """Load the config, then run a device command, turning a held lock or an
-    unusable state directory into an error and SIGTERM into Ctrl-C."""
+    """Wrap a device command so that it loads the config first.
+
+    A held lock, an unusable database or an OS error becomes an error
+    message, and SIGTERM is handled like Ctrl-C.
+    """
 
     def command(args: argparse.Namespace) -> int:
         config = _load(args.config)
@@ -284,8 +302,10 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
 
 
 def _follow(controller: Controller) -> None:
-    """Print what the controller publishes until Ctrl-C, SIGTERM, or the
-    reader of the output going away."""
+    """Print what the controller publishes until the output is closed.
+
+    Ctrl-C and SIGTERM end it too.
+    """
     closed = False
 
     def show(item: Result | Event) -> None:
@@ -293,8 +313,8 @@ def _follow(controller: Controller) -> None:
         try:
             _print(item)
         except BrokenPipeError:
-            # The reader went away (read --follow | head): stop, and send
-            # what is left, the stop-all report, nowhere.
+            # The reader went away (read --follow | head). Stop, and send the
+            # rest of the output, the stop-all report, to /dev/null.
             closed = True
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
@@ -318,7 +338,7 @@ def _database(config: Config) -> Path:
 
 
 def _slice_channels(config: Config) -> dict[str, tuple[str, str]]:
-    """Each RLHT channel's device and kind, for recording its readings."""
+    """Map each RLHT channel to its device's name and kind, for the recorder."""
     return {
         ch.name: (d.name, d.kind) for d in config.devices if d.kind == "rlht" for ch in d.channels
     }
@@ -382,8 +402,11 @@ def _run(args: argparse.Namespace, config: Config) -> int:
 
 
 def _end_run(store: Store, run: int, recorder: Recorder | None) -> None:
-    """Mark the run stopped, or interrupted if recording failed. This runs
-    after stop-all, outside the tick, so it may wait for the database."""
+    """Mark the run stopped, or interrupted if recording failed.
+
+    This runs after stop-all, outside the tick, so it may wait for the
+    database.
+    """
     failed = recorder.failed if recorder is not None else None
     status = "stopped" if failed is None else "interrupted"
     store.setup()
@@ -634,10 +657,12 @@ def _status_url(config: Config) -> str:
 
 
 def _status(args: argparse.Namespace) -> int:
-    """Each RLHT slice's state, from the running server. With no server it
-    reads nothing from the bus: every reply a slice builds feeds its
-    watchdog, so reading a slice after openreactor stopped would keep an
-    armed slice heating for as long as status is run."""
+    """Print each RLHT slice's state as the running server reports it.
+
+    With no server it reads nothing from the bus. Every reply a slice builds
+    feeds its watchdog, so reading a slice after openreactor stopped would
+    keep an armed slice heating for as long as status is run.
+    """
     import urllib.error
 
     config = _load(args.config)
@@ -681,9 +706,12 @@ def _status(args: argparse.Namespace) -> int:
 
 
 def _holder() -> str:
-    """Who holds the bus, to say why no server answered. Read from the lock
-    file without taking the lock, so a serve starting now is never refused;
-    a holder killed with -9 leaves its line behind, so its pid is checked."""
+    """Return who holds the bus, to explain why no server answered.
+
+    It reads the lock file without taking the lock, so a serve starting now
+    is never refused. A holder killed with -9 leaves its line behind, so
+    its pid is checked.
+    """
     try:
         text = Path(lock_path).read_text().strip()
     except OSError:
@@ -788,7 +816,7 @@ def _serve(args: argparse.Namespace) -> int:
             lock_path=None,  # held below, for the server's whole life
             clock=clock,
             sleep=sleep,
-            on_event=_print,  # what the controller does, as run prints it
+            on_event=_print,  # print events as run does
         )
 
     try:

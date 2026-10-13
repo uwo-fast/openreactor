@@ -1,5 +1,9 @@
-"""The openreactor TOML configuration: one file for the server, the controller
-timing and each device. Nothing is discovered; every device is listed here."""
+"""Load and validate the openreactor TOML configuration.
+
+One file sets the server, the controller timing and each device. Nothing is
+discovered: every device is listed here. Validation reports every problem
+in the file at once.
+"""
 
 from __future__ import annotations
 
@@ -33,10 +37,10 @@ ADDRESS_MIN = 0x08
 ADDRESS_MAX = 0x77
 WATCHDOG_MAX_MS = 65535  # a u16 on the wire
 
-# RLHT gains go to the slice as one byte each, ten times the gain.
 GAINS = ("kp", "ki", "kd")
 # The slice takes setpoints as i16 tenths of a degree.
 SETPOINT_MAX_C = 3276.7
+# RLHT gains go to the slice as one byte each, ten times the gain.
 GAIN_MAX = 25.5
 # An RLHT output's time-proportioning period: the firmware clamps anything
 # else into this range without saying so.
@@ -92,7 +96,7 @@ class StorageConfig:
 
 @dataclass(frozen=True)
 class ChannelConfig:
-    """An actuated output on a slice: an RLHT heater or a DCMT motor."""
+    """One actuated output on a slice, an RLHT heater or a DCMT motor."""
 
     name: str
     label: str
@@ -142,7 +146,10 @@ class ConfigError(Exception):
 
 
 def load_config(path: str | Path) -> Config:
-    """Read and validate a config file. Raises ConfigError listing every problem."""
+    """Read and validate a config file.
+
+    Raise ConfigError listing every problem.
+    """
     with open(path, "rb") as f:
         try:
             data = tomllib.load(f)
@@ -154,7 +161,10 @@ def load_config(path: str | Path) -> Config:
 
 
 def parse_config(data: dict[str, Any]) -> Config:
-    """Validate a parsed TOML document. Raises ConfigError listing every problem."""
+    """Validate a parsed TOML document.
+
+    Raise ConfigError listing every problem.
+    """
     parser = _Parser()
     config = parser.config(data)
     if parser.problems:
@@ -423,8 +433,6 @@ class _Parser:
                 )
             if output is not None:
                 used.setdefault(output, ch_name)
-            # Kept even when a field failed, so its name is still checked against
-            # the other devices; any error recorded here fails the whole config.
             gains = self.gains(ch, cpath) if kind == "rlht" else None
             period_ms = None
             if kind == "rlht" and "period_ms" in ch:
@@ -447,6 +455,8 @@ class _Parser:
                     max_setpoint = None
             if gains is not None:
                 tuned.append(ch_name)
+            # Keep the channel even when a field failed, so its name is still
+            # checked against the other devices; any error here fails the config.
             if name_ok:
                 kp, ki, kd = gains or (None, None, None)
                 result.append(
@@ -463,8 +473,8 @@ class _Parser:
                     )
                 )
         if kind == "rlht" and tuned and (len(tuned) != len(t) or set(used) != {1, 2}):
-            # The slice takes both outputs' gains in one command, and they
-            # cannot be read back: gains go only when the config gives all six.
+            # SET_PID sets both outputs' gains at once, and the slice cannot
+            # report its current ones, so the config gives all six or none.
             self.error(
                 path,
                 "gains (kp, ki, kd) must be set on a channel for each of the slice's two "
@@ -473,8 +483,11 @@ class _Parser:
         return tuple(result)
 
     def gains(self, ch: dict[str, Any], path: str) -> tuple[float, float, float] | None:
-        """kp, ki and kd: all three or none. The slice takes each as a byte
-        holding ten times the gain, so 0 to 25.5 in steps of 0.1."""
+        """Return a channel's kp, ki and kd, which are set together or not at all.
+
+        The slice takes each as a byte holding ten times the gain, so each
+        must be 0 to 25.5 in steps of 0.1.
+        """
         given = [g for g in GAINS if g in ch]
         if not given:
             return None
