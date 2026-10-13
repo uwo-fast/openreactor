@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from openreactor import cli
+from openreactor.config import load_config
 from openreactor.profile import (
     OFF,
     ProfileError,
@@ -38,8 +39,6 @@ def bad_step(*steps) -> str:
 
 
 def test_the_example_is_valid_against_the_example_config():
-    from openreactor.config import load_config
-
     config = load_config(EXAMPLES / "openreactor.toml")
     channels = {ch.name for d in config.devices for ch in d.channels}
     p = load_profile(EXAMPLE, channels)

@@ -1,11 +1,15 @@
+import http.server
 import io
 import json
+import subprocess
+import sys
+import threading
 import urllib.error
 from pathlib import Path
 
 import pytest
+from conftest import LOCAL, Bench, until
 from fastapi.testclient import TestClient
-from test_web import LOCAL, Bench, until
 
 from openreactor import cli
 from openreactor.lock import ControllerLock
@@ -24,11 +28,7 @@ channels.jacket = {{ output = 1, tc = 1 }}
 """
 
 
-@pytest.fixture(autouse=True)
-def lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "openreactor.lock"
-    monkeypatch.setattr(cli, "lock_path", path)
-    return path
+pytestmark = pytest.mark.usefixtures("lock")
 
 
 @pytest.fixture(autouse=True)
@@ -102,9 +102,6 @@ def test_with_nothing_running_it_reads_nothing_and_says_so(
 def test_a_holder_killed_without_releasing_the_lock_is_not_named(
     tmp_path: Path, lock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    import subprocess
-    import sys
-
     gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
                           capture_output=True, text=True, check=True)  # fmt: skip
     lock.write_text(f"cam, pid {gone.stdout.strip()}: openreactor serve\n")
@@ -202,9 +199,6 @@ def test_an_older_server_or_another_service_is_reported_plainly(
 
 
 def test_fetch_status_sends_the_password_as_a_bearer_token():
-    import http.server
-    import threading
-
     seen: dict[str, str | None] = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):

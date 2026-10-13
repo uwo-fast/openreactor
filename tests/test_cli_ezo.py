@@ -10,12 +10,22 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from fakes import FakeActuator, FakeClock, FakeI2cBus, FakePort, FakeRlht
+from fakes import (
+    SET_OPEN_DUTY,
+    SET_SETPOINTS,
+    SET_WATCHDOG,
+    FakeActuator,
+    FakeClock,
+    FakeI2cBus,
+    FakePort,
+    FakeRlht,
+)
 
-from openreactor import cli
+from openreactor import cli, storage
 from openreactor.config import DeviceConfig
 from openreactor.ezo import EzoDeviceError, Outcome, Value
 from openreactor.lock import ControllerLock
+from openreactor.storage import Store
 
 CONFIG = """
 [[device]]
@@ -46,12 +56,7 @@ address = 0x61
 """
 
 
-@pytest.fixture(autouse=True)
-def lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # The machine-wide lock lives in /run/lock; tests use their own file.
-    path = tmp_path / "openreactor.lock"
-    monkeypatch.setattr(cli, "lock_path", path)
-    return path
+pytestmark = pytest.mark.usefixtures("lock")
 
 
 @pytest.fixture(autouse=True)
@@ -396,8 +401,6 @@ def test_run_records_until_stopped_and_exports(
 def test_a_run_left_running_is_marked_interrupted_by_the_next(
     config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):
-    from openreactor.storage import Store
-
     store = Store(database)
     stale = store.start_run("crashed", "c")
     store.close()
@@ -413,8 +416,6 @@ def test_a_run_left_running_is_marked_interrupted_by_the_next(
 def test_run_does_not_touch_the_database_while_another_controller_runs(
     config: str, ports, database: Path, lock: Path
 ):
-    from openreactor.storage import Store
-
     store = Store(database)
     live = store.start_run("live", "c")
     store.close()
@@ -428,8 +429,6 @@ def test_run_does_not_touch_the_database_while_another_controller_runs(
 def test_export_of_an_unknown_run_fails_cleanly(config: str, database: Path, capsys):
     assert cli.main(["export", "-c", config, "9"]) == 1
     assert "no runs have been recorded yet" in capsys.readouterr().err
-    from openreactor.storage import Store
-
     Store(database).close()
     assert cli.main(["export", "-c", config, "9"]) == 1
     assert "there is no run 9" in capsys.readouterr().err
@@ -438,8 +437,6 @@ def test_export_of_an_unknown_run_fails_cleanly(config: str, database: Path, cap
 def test_run_exits_1_when_recording_failed(
     config: str, ports, database: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):
-    from openreactor import storage
-
     real = storage.Store.add_readings
     calls = {"n": 0}
 
@@ -488,8 +485,6 @@ def test_a_long_database_lock_still_ends_the_run_interrupted(
     monkeypatch.setattr(cli, "sleep", sleep)
     assert cli.main(["run", "-c", config, "--name", "brew"]) == 1
     assert "run 1: interrupted (database is locked)" in capsys.readouterr().err
-    from openreactor.storage import Store
-
     store = Store(database)
     assert [r.status for r in store.runs()] == ["interrupted"]
     store.close()
@@ -514,8 +509,8 @@ def test_run_starts_the_slice_and_makes_it_safe_on_the_way_out(
     assert cli.main(["run", "-c", config, "--name", "brew"]) == 0
     sent = [op for op, _ in heater.commands]
     # Start-up: safe state, then the watchdog; at the end, stop-all.
-    assert sent[:3] == [0x02, 0x06, 0x7E]
-    assert sent[-2:] == [0x02, 0x06]
+    assert sent[:3] == [SET_SETPOINTS, SET_OPEN_DUTY, SET_WATCHDOG]
+    assert sent[-2:] == [SET_SETPOINTS, SET_OPEN_DUTY]
     assert heater.armed == 1
 
 
@@ -529,4 +524,4 @@ def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(
     assert cli.main(["run", "-c", config, "--name", "brew"]) == 0
     assert "watchdog did not arm" in capsys.readouterr().out
     assert heater.state_replies == 0
-    assert [op for op, _ in heater.commands][-2:] == [0x02, 0x06]
+    assert [op for op, _ in heater.commands][-2:] == [SET_SETPOINTS, SET_OPEN_DUTY]

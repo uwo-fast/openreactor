@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import errno
+import struct
 from collections import deque
 
+from crumbs_i2c import Message, decode, encode
+
 from openreactor.ezo import EzoStatusError, Outcome, Value
+
+# RLHT and CRUMBS opcodes, written out here rather than imported: the tests
+# hold the client to these values, so they must not come from its source.
+GET_VERSION = 0x00
+SET_MODE = 0x01
+SET_SETPOINTS = 0x02
+SET_PID = 0x03
+SET_PERIODS = 0x04
+SET_TC = 0x05
+SET_OPEN_DUTY = 0x06
+GET_WATCHDOG = 0x7D
+SET_WATCHDOG = 0x7E
+GET_CAPS = 0x7F
+GET_STATE = 0x80
+SET_REPLY = 0xFE
 
 
 class FakeClock:
@@ -151,7 +170,7 @@ class FakeRlht:
         self.module = module
         self.caps = caps
         self.arms = arms
-        self.staged = 0x00
+        self.staged = GET_VERSION
         self.commands: list[tuple[int, bytes]] = []
         self.armed = 0
         self.timeout_ms = 0
@@ -178,8 +197,6 @@ class FakeRlht:
         self.watchdog_replies = 0
 
     def write(self, frame: bytes) -> None:
-        from crumbs_i2c import decode
-
         message = decode(frame)
         if self.faults and isinstance(self.faults[0], OSError):
             fault = self.faults.pop(0)
@@ -187,7 +204,7 @@ class FakeRlht:
             raise fault
         if message.opcode in self.fail_opcodes:
             raise self.fail_opcodes[message.opcode]
-        if message.opcode == 0xFE:
+        if message.opcode == SET_REPLY:
             self.staged = message.data[0]
             return
         self.commands.append((message.opcode, bytes(message.data)))
@@ -195,18 +212,18 @@ class FakeRlht:
         # clears a trip; SET_REPLY does not.
         self.tripped = 0
         op, data = message.opcode, message.data
-        if op == 0x7E and self.arms:  # SET_WATCHDOG
+        if op == SET_WATCHDOG and self.arms:
             self.timeout_ms = int.from_bytes(data[:2], "little")
             self.armed = 1 if self.timeout_ms else 0
-        elif op == 0x01:
+        elif op == SET_MODE:
             self.mode = data[0]
-        elif op == 0x02:
+        elif op == SET_SETPOINTS:
             self.setpoints = [
                 int.from_bytes(data[i : i + 2], "little", signed=True) for i in (0, 2)
             ]
-        elif op == 0x04:
+        elif op == SET_PERIODS:
             self.periods = [int.from_bytes(data[i : i + 2], "little") for i in (0, 2)]
-        elif op == 0x05:
+        elif op == SET_TC:
             self.tc = [data[0], data[1]]
         if op in self.fail_after:
             raise self.fail_after[op]
@@ -228,16 +245,14 @@ class FakeRlht:
         self.tc = [1, 2]
 
     def reply(self) -> bytes:
-        import struct
-
         op = self.staged
-        if op == 0x00:
+        if op == GET_VERSION:
             return struct.pack("<HBBB", self.crumbs_version, *self.module)
-        if op == 0x7F:
+        if op == GET_CAPS:
             return struct.pack("<BBI", 1, 1, self.caps)
-        if op == 0x7D:
+        if op == GET_WATCHDOG:
             return struct.pack("<BHBB", self.armed, self.timeout_ms, self.tripped, self.trip_count)
-        if op == 0x80:
+        if op == GET_STATE:
             return struct.pack(
                 "<BBhhhhHHHHB",
                 self.mode,
@@ -251,16 +266,14 @@ class FakeRlht:
         return b""
 
     def read(self, count: int) -> bytes:
-        from crumbs_i2c import Message, encode
-
         if self.faults:
             fault = self.faults.pop(0)
             if isinstance(fault, OSError):
                 raise fault
             return b"\xff" * count
-        if self.staged == 0x80:
+        if self.staged == GET_STATE:
             self.state_replies += 1
-        elif self.staged == 0x7D:
+        elif self.staged == GET_WATCHDOG:
             self.watchdog_replies += 1
         if self.staged in self.corrupt_replies:
             return b"\xff" * count
@@ -276,8 +289,6 @@ class FakeI2cBus:
         self.closed = False
 
     def _device(self, address: int) -> FakeRlht:
-        import errno
-
         if address not in self.devices:
             raise OSError(errno.ENXIO, "No such device or address")
         return self.devices[address]

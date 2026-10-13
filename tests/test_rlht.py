@@ -2,7 +2,21 @@ import errno
 import struct
 
 import pytest
-from fakes import FakeActuator, FakeClock, FakeI2cBus, FakeRlht
+from fakes import (
+    GET_STATE,
+    GET_WATCHDOG,
+    SET_MODE,
+    SET_OPEN_DUTY,
+    SET_PERIODS,
+    SET_PID,
+    SET_SETPOINTS,
+    SET_TC,
+    SET_WATCHDOG,
+    FakeActuator,
+    FakeClock,
+    FakeI2cBus,
+    FakeRlht,
+)
 
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Controller
@@ -17,16 +31,6 @@ from openreactor.rlht import (
     opened_slices,
 )
 
-SET_SETPOINTS, SET_OPEN_DUTY, SET_MODE, SET_PID, SET_PERIODS, SET_TC = (
-    0x02,
-    0x06,
-    0x01,
-    0x03,
-    0x04,
-    0x05,
-)
-SET_WATCHDOG = 0x7E
-GET_WATCHDOG = 0x7D
 JACKET = ChannelConfig(name="jacket", label="Jacket", output=1, tc=1)
 
 
@@ -264,7 +268,7 @@ def test_the_poll_is_split_across_ticks_and_publishes_each_channel():
     c = Controller(EzoReader([]), [s], polled=[s], ezo_period_s=2.0, clock=clock, sleep=clock.sleep)
     c.subscribe(seen.append)
     c.step()  # stages GET_STATE
-    assert seen == [] and rlht.staged == 0x80
+    assert seen == [] and rlht.staged == GET_STATE
     clock.now += 0.1
     c.step()  # reads it
     [result] = seen

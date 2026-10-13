@@ -1,3 +1,4 @@
+from openreactor import auth
 from openreactor.auth import hash_password, looks_like_hash, verify_password
 from openreactor.web import Gate
 
@@ -29,8 +30,6 @@ def test_a_malformed_hash_never_matches():
 
 
 def test_a_cost_out_of_bounds_is_refused_without_running_scrypt(monkeypatch):
-    from openreactor import auth
-
     stored = hash_password("pw")
     _, n, r, p, salt, key = stored.split("$")
 
