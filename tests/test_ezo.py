@@ -1,4 +1,7 @@
+import time
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import TypeVar
 
 import ezo_driver
 import pytest
@@ -11,16 +14,19 @@ from openreactor.ezo import (
     FAMILIES,
     EzoChannel,
     EzoDeviceError,
+    EzoPort,
     EzoReader,
     EzoStatusError,
+    Family,
     Outcome,
+    Steps,
     Value,
     bus_number,
-    calibrate,
+    calibrate_steps,
     calibration_args,
-    calibration_status,
+    calibration_status_steps,
     calibration_text,
-    clear_calibration,
+    clear_calibration_steps,
     outcome_for,
     to_celsius,
     values_from_reading,
@@ -39,6 +45,43 @@ def reader(*pairs: tuple[DeviceConfig, FakePort]) -> tuple[EzoReader, FakeClock]
     clock = FakeClock()
     channels = [EzoChannel(d, p) for d, p in pairs]
     return EzoReader(channels, clock=clock, sleep=clock.sleep), clock
+
+
+_T = TypeVar("_T")
+
+
+def run_steps(steps: Steps[_T], sleep: Callable[[float], None] = time.sleep) -> _T:
+    """Drive a multi-step command to the end, sleeping between steps."""
+    try:
+        while True:
+            sleep(next(steps))
+    except StopIteration as done:
+        return done.value
+
+
+def calibration_status(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> str:
+    return run_steps(calibration_status_steps(port), sleep)
+
+
+def calibrate(
+    family: Family,
+    port: EzoPort,
+    point: str,
+    value: float | None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    run_steps(calibrate_steps(family, port, point, value), sleep)
+
+
+def clear_calibration(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> None:
+    run_steps(clear_calibration_steps(port), sleep)
+
+
+def next_due(r: EzoReader) -> float | None:
+    """Return when the reader's next outstanding read is due, if one is."""
+    pending = r._pending.values()  # pyright: ignore[reportPrivateUsage]
+    dues = [p.due for p in pending if not p.waiting_for_cycle]
+    return min(dues) if dues else None
 
 
 def by_channel(results):
@@ -203,7 +246,7 @@ def test_not_ready_is_read_again_a_full_delay_later_without_a_new_read():
         ("orp", Outcome.OK),
         ("ph", Outcome.OK),
     ]
-    assert r.next_due() is None
+    assert next_due(r) is None
 
 
 def test_not_ready_twice_is_reported_and_nothing_is_left_pending():
@@ -216,7 +259,7 @@ def test_not_ready_twice_is_reported_and_nothing_is_left_pending():
         ("orp", Outcome.OK),
         ("ph", Outcome.NOT_READY),
     ]
-    assert r.next_due() is None
+    assert next_due(r) is None
     # The next cycle starts afresh with one new read each.
     assert sorted((x.channel, x.outcome) for x in cycle(r)) == [
         ("orp", Outcome.OK),
