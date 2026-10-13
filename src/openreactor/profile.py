@@ -1,4 +1,4 @@
-"""Run profiles: a schedule of setpoints for each actuated channel.
+"""Read and validate run profiles, schedules of setpoints for actuated channels.
 
 A profile is a TOML file::
 
@@ -21,9 +21,8 @@ Each channel's steps run in order from the profile's start:
 - ``hold``: keep what is there for a duration.
 - ``off``: the channel's safe state, at once.
 
-Durations are a number and a unit: ``30s``, ``2m``, ``1.5h``. The same
-validator serves the CLI, the API and the UI; every problem names its place
-in the file and how to fix it.
+Durations are a number and a unit: ``30s``, ``2m``, ``1.5h``. Every problem
+the validator reports names its place in the file and how to fix it.
 """
 
 from __future__ import annotations
@@ -81,8 +80,10 @@ class Profile:
         return max((s[-1].end for s in self.channels.values()), default=0.0)
 
     def value_at(self, channel: str, t: float) -> Setpoint:
-        """The setpoint for ``channel`` at ``t`` seconds from the start.
-        From the profile's end on, every channel is off."""
+        """Return the setpoint for ``channel`` at ``t`` seconds from the start.
+
+        From the profile's end on, every channel is off.
+        """
         segments = self.channels[channel]
         if not t < self.duration:  # also NaN
             return OFF
@@ -107,8 +108,10 @@ class ProfileError(Exception):
 
 
 def load_profile(path: str | Path, channels: Collection[str] | None = None) -> Profile:
-    """Read and validate a profile file. ``channels``, if given, are the
-    actuated channels it may use. Raises ProfileError listing every problem."""
+    """Read and validate a profile file, raising ProfileError with every problem.
+
+    ``channels``, if given, are the actuated channels it may use.
+    """
     with open(path, "rb") as f:
         return profile_from_bytes(f.read(), channels, str(path))
 
@@ -116,7 +119,7 @@ def load_profile(path: str | Path, channels: Collection[str] | None = None) -> P
 def profile_from_bytes(
     data: bytes, channels: Collection[str] | None = None, source: str = "profile"
 ) -> Profile:
-    """Validate a profile's text, as uploaded or read from a file."""
+    """Validate a profile's text; ``source`` names it in a parse error."""
     try:
         parsed = tomllib.loads(data.decode("utf-8"))
     except UnicodeDecodeError as e:
@@ -127,7 +130,7 @@ def profile_from_bytes(
 
 
 def parse_profile(data: Any, channels: Collection[str] | None = None) -> Profile:
-    """Validate a parsed profile: from TOML, or a JSON body."""
+    """Validate a profile already parsed into Python values."""
     if not isinstance(data, dict):
         raise ProfileError([Problem("profile", "must be a table", "start with version = 1")])
     problems: list[Problem] = []
@@ -322,7 +325,7 @@ def _duration(value: Any, path: str, error: Any) -> float | None:
 
 
 def clock(seconds: float) -> str:
-    """``H:MM:SS`` from the start, with milliseconds when they are not zero."""
+    """Format seconds from the start as ``H:MM:SS``, with any milliseconds."""
     ms = round(seconds * 1000)
     h, rest = divmod(ms, 3_600_000)
     m, rest = divmod(rest, 60_000)
@@ -337,7 +340,7 @@ def _value(v: Setpoint) -> str:
 
 
 def timeline(profile: Profile) -> list[str]:
-    """What happens when, one line per step, in time order."""
+    """Describe what happens when, one line per step, in time order."""
     rows: list[tuple[float, int, int, str]] = []
     width = max(len(c) for c in profile.channels)
     for order, (channel, segments) in enumerate(profile.channels.items()):

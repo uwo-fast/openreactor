@@ -1,9 +1,9 @@
-"""The service layer: every operator action, for the API and the UI alike.
+"""Carry out every operator action for the API and the UI.
 
-It never touches the bus itself. Readings come from the controller, actions
-go to it as commands, and the run's database writes happen on the
-controller's thread. Listing and exporting runs use read-only connections of
-their own, so request threads never write.
+The service never touches the bus itself. Readings come from the
+controller, actions go to it as commands, and the run's database writes
+happen on the controller's thread. Listing and exporting runs use read-only
+connections of their own, so request threads never write.
 """
 
 from __future__ import annotations
@@ -52,15 +52,18 @@ _T = TypeVar("_T")
 
 # How long a request waits for the controller to finish an action.
 ACTION_TIMEOUT_S = 30.0
-# How long status waits for the slices' state; well inside status's own
-# timeout, so a busy controller shows as such instead of no answer.
+# How long status waits for the slices' state. It is well inside status's
+# own timeout, so a busy controller shows as busy instead of not answering.
 SLICE_STATUS_TIMEOUT_S = 2.0
 
 
 def _wait(future: Future[_T]) -> _T:
-    """The action's result. One the controller has not started within the
-    timeout is cancelled, so it never runs after the caller gave up; one
-    already running is let finish."""
+    """Wait for the action and return its result.
+
+    An action the controller has not started within the timeout is
+    cancelled, so it never runs after the caller gave up; one already
+    running is left to finish.
+    """
     try:
         return future.result(timeout=ACTION_TIMEOUT_S)
     except TimeoutError:
@@ -79,7 +82,10 @@ class NotFound(Exception):
 
 
 class Conflict(Exception):
-    """The action does not fit the current state (a run already running)."""
+    """The action does not fit the current state.
+
+    Examples: a run already recording, or a slice e-stopped or read-only.
+    """
 
 
 class Unavailable(Exception):
@@ -95,7 +101,7 @@ class DeviceFailed(Exception):
 
 
 class Invalid(Exception):
-    """The request's values are wrong (a calibration point the device lacks)."""
+    """The request's values are wrong, such as a calibration point the device lacks."""
 
 
 @dataclass(frozen=True)
@@ -196,8 +202,10 @@ class Service:
         return states
 
     def slices(self) -> list[SliceStatus]:
-        """Each configured RLHT as the controller last saw it, read on the
-        controller's thread so each one is consistent."""
+        """Return each configured RLHT slice as the controller last saw it.
+
+        It is read on the controller's thread, so each status is consistent.
+        """
 
         def why(name: str) -> str | None:
             p = self._problems.get(name)
@@ -221,7 +229,7 @@ class Service:
         try:
             return future.result(timeout=SLICE_STATUS_TIMEOUT_S)
         except TimeoutError:
-            # The rest of status needs no controller; don't fail it whole.
+            # The rest of status needs no controller, so do not fail it whole.
             future.cancel()
             return [
                 SliceStatus(d.name, d.address, "unknown: the controller did not answer in time")
@@ -237,14 +245,16 @@ class Service:
         return self._run
 
     def recording_failed(self) -> str | None:
-        """Why the current run stopped recording, if it did."""
+        """Return why the current run stopped recording, or None if it did not."""
         recorder = self._recorder
         return recorder.failed if recorder is not None else None
 
     def set_setpoint(self, channel: str, value: float) -> None:
-        """Set an RLHT channel's setpoint in °C, to the slice's tenth of a
-        degree. It stays the desired setpoint, sent again after a trip or a
-        reboot, until it is set again or stop-all or an e-stop zeroes it."""
+        """Set an RLHT channel's setpoint in °C, rounded to a tenth of a degree.
+
+        It stays the desired setpoint, sent again after a trip or a reboot,
+        until it is set again or stop-all or an e-stop zeroes it.
+        """
         for d in self.config.devices:
             for ch in d.channels:
                 if ch.name == channel:
@@ -261,7 +271,7 @@ class Service:
         if not math.isfinite(value) or value < 0:
             raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
         deci = round(value * 10)
-        # Compared as sent, in tenths: 80.06 would go as 80.1.
+        # Compare in tenths, as sent: 80.06 goes as 80.1.
         if deci > math.floor(limit * 10 + 1e-9):
             what = "its max_setpoint" if ch.max_setpoint is not None else "the most the slice takes"
             raise Invalid(f"{ch.name}: {deci / 10:g} °C is above {what}, {limit:g} °C")
@@ -312,8 +322,10 @@ class Service:
             raise TimeoutError("stop-all was queued but has not reported back") from None
 
     def stop_now(self) -> None:
-        """Queue stop-all without waiting: for a signal handler, before the
-        server drains its connections."""
+        """Queue stop-all without waiting for it.
+
+        A signal handler calls this before the server drains its connections.
+        """
         self.controller.stop_all("system")
 
     # Runs
@@ -419,8 +431,10 @@ class Service:
     # Shutdown
 
     def close(self) -> None:
-        """Stop-all, then end a recording run, then close the database.
-        Called before the circuits are closed."""
+        """Send stop-all, end a recording run, and close the database.
+
+        This runs before the circuits are closed.
+        """
         try:
             # Stop-all first, so its events are part of the run. The
             # controller's thread has stopped after this, so ending the run
@@ -457,11 +471,14 @@ def running(
     sleep: Callable[[float], None] = time.sleep,
     on_event: Callable[[Result | Event], None] | None = None,
 ) -> Iterator[Service]:
-    """Take the controller lock, open and check the circuits, start the RLHT
-    slices, start the controller on its own thread, and yield the service. On
-    the way out, stop-all is sent before anything closes. ``lock_path=None``
-    means the caller already holds the lock. ``on_event`` gets each start-up
-    problem and event, then every event the controller publishes."""
+    """Start the controller and yield the service.
+
+    This takes the controller lock, opens and checks the circuits, and
+    starts the RLHT slices and the controller's thread. On the way out,
+    stop-all is sent before anything closes. ``lock_path=None`` means the
+    caller already holds the lock. ``on_event`` gets each start-up problem
+    and event, then every event the controller publishes.
+    """
     database = Path(config.storage.database) if config.storage.database else default_path()
     with ControllerLock(lock_path) if lock_path is not None else nullcontext():
         channels: list[EzoChannel] = []

@@ -1,8 +1,8 @@
-"""The HTTP API, ``/api/v1``, over the service layer.
+"""Serve the HTTP API, ``/api/v1``, over the service layer.
 
-One process, one worker: the controller lives in the app's lifespan, and
-routes are plain ``def`` so FastAPI runs them on its thread pool and they
-can wait on the controller without blocking the event loop.
+It runs as one process with one worker: the controller lives in the app's
+lifespan, and routes are plain ``def`` so FastAPI runs them on its thread
+pool and they can wait on the controller without blocking the event loop.
 
 Who may call it:
 
@@ -70,9 +70,11 @@ CHECK_WAIT_S = 2.0
 
 
 class LoopbackHostsOnly:
-    """Without a password the API trusts whoever reaches it, which only
-    holds under a loopback Host name: refuse any other, which is what a
-    page using DNS rebinding sends."""
+    """Refuse any request whose Host is not a loopback name.
+
+    Without a password the API trusts whoever reaches it, which only holds
+    under a loopback Host. A page using DNS rebinding sends another.
+    """
 
     def __init__(self, app: Any):
         self.app = app
@@ -93,8 +95,11 @@ class LoopbackHostsOnly:
 
 
 class TooLarge(HTTPException):
-    """Raised from receive(); an HTTPException, so FastAPI's body parsing
-    passes it on as a 413 instead of turning it into a 400."""
+    """Signal from receive() that the request body is over the limit.
+
+    As an HTTPException, FastAPI's body parsing passes it on as a 413
+    instead of turning it into a 400.
+    """
 
     def __init__(self) -> None:
         super().__init__(status_code=413, detail="request body too large")
@@ -107,8 +112,11 @@ def _too_large(e: BaseException) -> bool:
 
 
 class BodyLimit:
-    """Refuse a request body over ``limit`` bytes with 413: by its
-    Content-Length before reading anything, or once that much has arrived."""
+    """Refuse a request body over ``limit`` bytes with 413.
+
+    It checks the Content-Length before reading anything, then counts the
+    body as it arrives.
+    """
 
     def __init__(self, app: Any, limit: int = MAX_BODY_BYTES):
         self.app = app
@@ -143,7 +151,7 @@ class BodyLimit:
         try:
             await self.app(scope, counted_receive, tracked_send)
         except BaseException as e:
-            # Answered here if no route turned it into its own 413.
+            # Answer here unless a route already turned it into its own 413.
             if not _too_large(e) or started:
                 raise
             await self._refuse(send)
@@ -170,14 +178,15 @@ class Busy(Exception):
 
 
 class Gate:
-    """Checks the shared password and keeps the signed-in sessions.
+    """Check the shared password and keep the signed-in sessions.
 
     One scrypt check runs at a time: each costs 32 MiB, and a burst of
     wrong guesses must not add up to more. Each client address has at most
     one check running or waiting; another from the same address is refused
     (429) at once. Others wait up to CHECK_WAIT_S for their turn, so one
     guessing host cannot hold the check and lock everyone else out, and a
-    password already verified is compared directly without waiting."""
+    password already verified is compared directly without waiting.
+    """
 
     def __init__(self, password_hash: str | None):
         self.password_hash = password_hash
@@ -194,8 +203,11 @@ class Gate:
         return self.password_hash is None
 
     def check(self, password: str, client: str = "") -> bool:
-        """Raises Busy if ``client`` already has a check in hand, or if the
-        check stays busy for CHECK_WAIT_S."""
+        """Return whether ``password`` is the shared password.
+
+        Raises Busy if ``client`` already has a check in hand, or if the
+        check stays busy for CHECK_WAIT_S.
+        """
         if self.password_hash is None:
             return True
         given = password.encode()
@@ -276,15 +288,18 @@ def _check_origin(request: Request, *, by_cookie: bool) -> None:
 
 
 def authorize(request: Request) -> None:
-    """The dependency every API route and the API docs sit behind."""
+    """Raise unless the request may use the API.
+
+    Every API route and the API docs depend on this.
+    """
     gate: Gate = request.app.state.gate
     if gate.open:
         _check_origin(request, by_cookie=False)
         return
     token = _bearer(request)
     if token is not None:
-        # A script: the password itself, no ambient credential, so no
-        # Origin rule is needed.
+        # A script sends the password itself, not an ambient credential a
+        # browser adds, so no Origin rule is needed.
         try:
             ok = gate.check(token, _client(request))
         except Busy:
@@ -349,7 +364,7 @@ class StatusOut(BaseModel):
     # current run until it is stopped.
     recording_failed: str | None
     devices: list[DeviceOut]
-    # Each RLHT slice in detail: firmware, mode, e-stop, watchdog, outputs.
+    # Each RLHT slice's firmware, mode, e-stop, watchdog and outputs.
     slices: list[SliceStatus]
 
 
@@ -456,7 +471,6 @@ def delete_calibration(device: str, svc: Svc) -> CalibrationStatus:
     return CalibrationStatus(device=device, status=svc.clear_calibration(device))
 
 
-# What each service error is, as an HTTP status.
 ERRORS: tuple[tuple[type[Exception], int], ...] = (
     (NotFound, 404),
     (Conflict, 409),
@@ -481,7 +495,7 @@ def error_detail(exc: Exception) -> str:
 
 
 def wants_html(request: Request) -> bool:
-    """A browser submitting a form, rather than a script or htmx."""
+    """Return whether a browser submitted a form, rather than a script or htmx."""
     return "text/html" in request.headers.get("accept", "") and "hx-request" not in request.headers
 
 
@@ -498,15 +512,18 @@ async def _password_from(request: Request) -> str:
 
 
 def create_app(config: Config, start: Callable[[], AbstractContextManager[Service]]) -> FastAPI:
-    """``start`` opens the circuits and starts the controller, and on exit
-    sends stop-all and closes them (``service.running``)."""
+    """Build the app.
+
+    ``start``, such as ``service.running``, opens the circuits and starts
+    the controller, and on exit sends stop-all and closes them.
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with start() as svc:
             app.state.service = svc
-            # For the server's signal handler: stop-all at once, before it
-            # waits for open connections to finish.
+            # The server's signal handler sends stop-all with this at once,
+            # before it waits for open connections to finish.
             app.state.stop_now = svc.stop_now
             try:
                 yield

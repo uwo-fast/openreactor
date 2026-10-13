@@ -1,10 +1,10 @@
-"""Atlas Scientific EZO circuits: identity check, split-phase reads with
-temperature compensation, and calibration.
+"""Check, read and calibrate Atlas Scientific EZO circuits.
 
 Each circuit is reached through an ``EzoPort``. ``DriverPort`` implements it
-over ezo-driver on Linux I2C; tests use a fake. ``EzoReader`` sends every read,
-then reads each circuit when its own delay is up, so one slow circuit never
-holds up another.
+over ezo-driver on Linux I2C; tests use a fake. ``EzoReader`` reads
+split-phase, with temperature compensation where configured: it sends every
+read, then reads each circuit when its own delay is up, so one slow circuit
+never holds up another.
 """
 
 from __future__ import annotations
@@ -76,9 +76,12 @@ RTD_NO_PROBE = -1023.0
 
 
 class EzoPort(Protocol):
-    """One EZO circuit. Each ``send_*`` returns the wait in ms before its
-    ``read_*`` may be called. Reads raise ``EzoStatusError`` when the circuit
-    reports NOT_READY, FAIL or NO_DATA, and ``EzoDeviceError`` otherwise."""
+    """One EZO circuit.
+
+    Each ``send_*`` returns the wait in ms before its ``read_*`` may be
+    called. Reads raise ``EzoStatusError`` when the circuit reports
+    NOT_READY, FAIL or NO_DATA, and ``EzoDeviceError`` otherwise.
+    """
 
     def send_info_query(self) -> int: ...
     def read_family(self) -> str: ...
@@ -149,14 +152,14 @@ def _celsius(values: Iterable[Value]) -> float | None:
 
 
 class EzoReader:
-    """Split-phase reads across a set of circuits.
+    """Read a set of circuits split-phase.
 
     ``begin`` sends a read to every circuit that has none outstanding, and
     re-arms a circuit that answered NOT_READY so it is read again one delay
-    later. ``collect`` reads the circuits whose delay is up. Neither waits; the
-    controller decides when to call them. pH, EC and DO
-    compensate with the last temperature read from the RTD named in their
-    ``temp_comp``; a failed RTD read clears that temperature.
+    later. ``collect`` reads the circuits whose delay is up. Neither waits;
+    the controller decides when to call them. pH, EC and DO compensate with
+    the last temperature read from the RTD named in their ``temp_comp``; a
+    failed RTD read clears that temperature.
     """
 
     def __init__(
@@ -173,9 +176,11 @@ class EzoReader:
         self._by_name = {c.name: c for c in self.channels}
 
     def prepare(self) -> list[Result]:
-        """Check each circuit's type against the config and cache the output
-        masks of DO, EC and HUM and the RTD scale. A circuit that fails is
-        disabled. Blocks for each query's delay."""
+        """Check each circuit's type against the config, disabling any that fails.
+
+        This caches the DO, EC and HUM output masks and the RTD scale, and
+        blocks for each query's delay.
+        """
         problems: list[Result] = []
         for ch in self.channels:
             try:
@@ -201,16 +206,18 @@ class EzoReader:
         return self._temperatures.get(source) if source is not None else None
 
     def pending(self) -> set[str]:
-        """Circuits with a read outstanding, including NOT_READY retries."""
+        """Return the circuits with a read outstanding, including NOT_READY retries."""
         return set(self._pending)
 
     def waiting(self) -> set[str]:
-        """Circuits that answered NOT_READY and wait to be re-armed."""
+        """Return the circuits that answered NOT_READY and wait to be re-armed."""
         return {name for name, p in self._pending.items() if p.waiting_for_cycle}
 
     def rearm(self) -> None:
-        """Read again, one delay from now, every circuit that answered
-        NOT_READY. ``begin`` does this at the start of each cycle."""
+        """Read every circuit that answered NOT_READY again, one delay from now.
+
+        ``begin`` does this at the start of each cycle.
+        """
         self._rearm(self._clock())
 
     def _rearm(self, now: float) -> None:
@@ -221,7 +228,9 @@ class EzoReader:
 
     def begin(self, names: Iterable[str] | None = None, skip: Iterable[str] = ()) -> list[Result]:
         """Start a cycle for ``names`` (default all), leaving out ``skip``.
-        Returns the circuits whose read could not be sent."""
+
+        Returns the circuits whose read could not be sent.
+        """
         now = self._clock()
         self._rearm(now)
         wanted = set(names) if names is not None else None
@@ -297,8 +306,9 @@ class EzoReader:
 
 
 # Multi-step commands are generators: each yields how long to wait, in
-# seconds, before it may continue, and returns its result. run_steps drives
-# one with sleep for the CLI; the controller resumes it on later ticks.
+# seconds, before it may continue, and returns its result. The CLI and the
+# service hand them to the controller, which resumes them on later ticks.
+# run_steps drives one to the end with sleep instead.
 Steps = Generator[float, None, _T]
 
 
@@ -338,9 +348,12 @@ def check_calibration(family: Family, point: str, value: float | None) -> None:
 
 
 def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | None) -> Steps[None]:
-    """Calibrate one point. EC and DO are first put back to their default
-    compensation temperature, as their datasheets require. The arguments are
-    checked before anything is sent."""
+    """Calibrate one point.
+
+    EC and DO are first put back to their default compensation temperature,
+    as their datasheets require. The arguments are checked before anything
+    is sent.
+    """
     check_calibration(family, point, value)
     if family.calibration_temp_c is not None:
         temperature = family.calibration_temp_c
@@ -375,7 +388,7 @@ def clear_calibration(port: EzoPort, sleep: Callable[[float], None] = time.sleep
 
 
 def outcome_for(status: Any, statuses: Any) -> Outcome | None:
-    """The outcome for a non-success ``DeviceStatus``, or None if unknown."""
+    """Return the outcome for a non-success ``DeviceStatus``, or None if unknown."""
     return {
         statuses.NOT_READY: Outcome.NOT_READY,
         statuses.FAIL: Outcome.FAIL,
@@ -384,8 +397,10 @@ def outcome_for(status: Any, statuses: Any) -> Outcome | None:
 
 
 def values_from_reading(family: str, reading: Any, enums: Any) -> tuple[Value, ...]:
-    """Turn an ezo-driver reading into values. Multi-output families report
-    only the outputs present in the reading's mask."""
+    """Turn an ezo-driver reading into values.
+
+    Multi-output families report only the outputs in the reading's mask.
+    """
     if family == "ph":
         return (Value("", float(reading.ph), "pH"),)
     if family == "orp":
@@ -440,7 +455,7 @@ def calibration_text(family: str, status: Any) -> str:
 
 
 def calibration_args(family: str, point: str, value: float | None, enums: Any) -> tuple[Any, ...]:
-    """The arguments after the device for ezo-driver's calibration call."""
+    """Return the arguments after the device for ezo-driver's calibration call."""
     if family == "ph":
         return (enums.PHCalibrationPoint[point.upper()], value)
     if family in ("orp", "rtd", "hum"):

@@ -1,4 +1,4 @@
-"""The operator's browser UI: server-rendered pages with htmx partials.
+"""Serve the operator's browser UI as server-rendered pages with htmx partials.
 
 Every page and action goes through the same service layer as /api/v1, and
 sits behind the same sign-in. Pages redirect to /login; actions use the
@@ -37,7 +37,7 @@ templates.env.filters["utc"] = lambda t: datetime.fromtimestamp(t, UTC).strftime
 
 
 class SignInFirst(Exception):
-    """A page asked for without a session: answered with a redirect."""
+    """A page was asked for without a session; the handler redirects to /login."""
 
 
 def page_access(request: Request) -> None:
@@ -163,7 +163,7 @@ def _errors() -> tuple[tuple[type[Exception], int], ...]:
 
 
 def _error_notice(request: Request, exc: Exception) -> HTMLResponse:
-    """The error as the API would report it, with the API's status."""
+    """Render the error as the API would report it, with the API's status."""
     from openreactor.web import error_detail
 
     code = next(c for e, c in _errors() if isinstance(exc, e))
@@ -171,14 +171,14 @@ def _error_notice(request: Request, exc: Exception) -> HTMLResponse:
 
 
 async def _act(request: Request, work: Callable[[], str], *, changes: bool = True) -> HTMLResponse:
-    """Run ``work`` off the event loop: its message, or its error."""
+    """Run ``work`` off the event loop and render its message or its error."""
     try:
         message = await run_in_threadpool(work)
     except tuple(e for e, _ in _errors()) as exc:
         return _error_notice(request, exc)
     response = _notice(request, message, ok=True)
     if changes:
-        # Lets the parts of the page that show runs or calibration refresh.
+        # Tell the parts of the page that show runs or calibration to refresh.
         response.headers["HX-Trigger"] = "changed"
     return response
 
@@ -284,8 +284,11 @@ async def clear_calibration(request: Request, device: str) -> HTMLResponse:
 
 
 class NoFraming:
-    """Forbid other sites from framing any page: without a password, a page
-    framed on another site could otherwise be clicked through."""
+    """Forbid other sites from framing any page.
+
+    Without a password, a page framed on another site could otherwise be
+    clicked through.
+    """
 
     def __init__(self, app: Any):
         self.app = app
