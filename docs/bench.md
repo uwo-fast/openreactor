@@ -9,7 +9,7 @@ the openreactor and library versions, and the firmware commit on each slice.
 | Firmware commits flashed on each slice | 2026-10-12 | 2.0.0a1 (ade88dc) | crumbs-i2c 0.15.0, bread-crumbs-contracts 0.5.0, ezo-driver 0.6.0 | Slice_RLHT 4383bd9 (`gen1_nano`); 2× Slice_DCMT 44966b3 | RLHT flashed. The DCMTs are not exercised until #25 |
 | Version and caps reported as expected | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: RLHT 1.0.0, CRUMBS 0.12.5, caps 0x7F |
 | Watchdog armed, and it trips when the process is killed | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: armed at 5000 ms. After `kill -9` at ~400 ms on per 1000 ms, the relay went off ~5 s later, by eye. The trip count went 1, then 2, over two kills, and each restart re-armed the watchdog |
-| Desired state re-asserted after a slice power-cycle | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: backplane power cut for ~10 s at a 40 °C setpoint gave `slice-reboot` `re-asserted`, and the relay resumed |
+| Desired state re-asserted after a slice power-cycle | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass on ade88dc: backplane power cut for ~10 s at a 40 °C setpoint gave `slice-reboot` `re-asserted`, and the relay resumed. Since #62 the setpoints stay at 0 after a reboot; re-test pending |
 | E-stop pressed and released resumes nothing | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Fail for an e-stop that cuts backplane power: on release the relay resumes at the old setpoint (#62; fixed on main since, re-test pending). The ESTOP-pin e-stop is not tested on this rig |
 | Stop-all from the UI, the API and `systemctl stop` | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass, all three. `systemctl --user stop` of a transient `systemd-run` unit (none ships yet, #29): stop-all 91 ms later, and the relay went off at once |
 | Time from stop-all to the relay off, on a heating RLHT output (#51) | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: relay off at once, by eye. The API answered in 91 ms, and a status read 1 s later showed `on_ms 0`. Relay only, no heater wired |
@@ -22,8 +22,8 @@ the openreactor and library versions, and the firmware commit on each slice.
 ## Before you start
 
 Prepare the Pi and install openreactor as [install.md](install.md)
-describes, with a configuration that lists the rig's devices. `run` and
-`serve` skip DCMT slices with a note until
+describes, with a configuration that lists the rig's devices. openreactor
+does not drive DCMT slices until
 [#25](https://github.com/uwo-fast/openreactor/issues/25).
 
 ## How to run the controller lock check

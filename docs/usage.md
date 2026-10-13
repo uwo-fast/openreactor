@@ -26,8 +26,8 @@ Commands that use a configuration read `/etc/openreactor/openreactor.toml`
 unless you pass `-c FILE`.
 
 `run` and `serve` start each RLHT slice in the configuration. `read` and
-`ezo cal` never touch a slice. No command drives a DCMT slice yet; `run` and
-`serve` skip them with a note.
+`ezo cal` never touch a slice. No command drives a DCMT slice yet; `run`
+skips them with a note, and `serve` shows them as not supported.
 
 ## One controller at a time
 
@@ -65,7 +65,7 @@ it is set.
 
 If the database fails during a run, for example because the disk is full,
 recording stops and the run is marked `interrupted`. Control and stop-all
-carry on. `run` then exits with status 1.
+carry on. When you stop it, `run` exits with status 1.
 
 If openreactor dies while a run is recording, the run stays marked
 `running`. The next run marks it `interrupted`.
@@ -89,8 +89,9 @@ thermocouple. When the slice runs a setpoint other than the one openreactor
 wants, the line shows the wanted one too.
 
 `status` asks the running server, at the configuration's `[server]` address
-or at `--url`. It sends the password from `OPENREACTOR_PASSWORD`, or prompts
-for one when the server asks.
+or at `--url`. It sends the password from `OPENREACTOR_PASSWORD`. Without
+it, when the server asks for a password, `status` prompts for one in a
+terminal and fails otherwise.
 
 With no server running, `status` reads nothing. Every reply a slice builds
 feeds its watchdog, so reading a slice after openreactor stopped would keep
@@ -110,8 +111,9 @@ Each channel has a list of steps, which run in order from the start:
 | `{ off = true }` | Put the channel in its safe state. |
 
 Durations are a number and a unit, `s`, `m` or `h`, such as `"45s"`, `"2m"`
-or `"1.5h"`. When a profile ends or is aborted, every channel in it goes to
-its safe state.
+or `"1.5h"`. The format specifies that when a profile ends or is aborted,
+every channel in it goes to its safe state; openreactor cannot run a
+profile yet.
 [examples/profiles/ramp-and-hold.toml](../examples/profiles/ramp-and-hold.toml)
 uses every step.
 

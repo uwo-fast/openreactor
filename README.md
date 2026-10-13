@@ -8,8 +8,9 @@
 
 openreactor runs batch and semi-batch reactors on the bench, for biology, wet
 chemistry and thermal work such as melting and curing. The heater and motor
-boards run their own control loops and stop their outputs if they lose
-contact with the Pi. openreactor supervises them over I2C: it applies
+boards run their own control loops, and a heater board with a command
+watchdog stops its outputs if it loses contact with the Pi. openreactor
+supervises them over I2C: it applies
 setpoints, reads water-chemistry sensors, records each run, and stops every
 output on request.
 
@@ -34,9 +35,10 @@ and usage instructions.
 
 openreactor runs on a Raspberry Pi with 64-bit Raspberry Pi OS. It drives
 RLHT heater slices running [Slice_RLHT](https://github.com/feastorg/Slice_RLHT)
-firmware, each with two heater outputs and an onboard PID on two
-thermocouples. It reads Atlas Scientific EZO pH, ORP, RTD, EC, DO and HUM
-circuits. Every device is listed in the configuration file.
+firmware, each with an onboard PID on two outputs and two thermocouples (a
+gen1 board has a heater relay on output 1 only). It reads Atlas Scientific
+EZO pH, ORP, RTD, EC, DO and HUM circuits. Every device is listed in the
+configuration file.
 
 ## Install and quick start
 

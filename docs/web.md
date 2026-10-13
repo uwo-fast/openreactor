@@ -15,7 +15,8 @@ open it to other machines.
 
 ## The browser UI
 
-Every page has a Stop all button, which sends stop-all to every slice at once.
+Every page except sign-in has a Stop all button, which sends stop-all to
+every slice at once.
 If any slice fails to go safe, the page names it.
 
 | Page | Path | What it shows |
@@ -95,11 +96,13 @@ A `PUT` to `/channels/{channel}/setpoint` answers with one of these:
 | 422 | The value is not a JSON number, is below 0, or is above the limit. |
 | 502 | Sending failed. The slice may still have applied it, so the next polls compare what it runs with what is wanted. |
 | 503 | The slice is unreachable, did not finish start-up, or is not in use. |
-| 504 | The controller did not finish within 30 seconds. |
+| 504 | The controller did not start the action within 30 seconds, or started it and did not finish within 30 more. |
 
 Any endpoint can also answer 401 when you are not signed in, 403 when the
-`Origin` check fails, 413 when the request body is over 64 KiB, and 429 when
-another password check from the same address is running.
+`Origin` check fails or, on a server with no password, when the request is
+not addressed to a loopback name, 413 when the request body is over 64 KiB,
+and 429 when another password check from the same address is running or
+another client's check did not finish in time.
 
 The other endpoints use the same codes for the same kinds of problem: 404
 for an unknown device or run, 409 for an action that does not fit the

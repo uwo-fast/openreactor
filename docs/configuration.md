@@ -44,14 +44,15 @@ network.
 | `ezo_period_s` | `2.0` | How often the EZO sensors are read, in seconds. |
 | `watchdog_timeout_ms` | `5000` | How long a slice waits without hearing from openreactor before it stops its outputs. |
 
-Each poll also feeds the slice's watchdog, so the three settings are checked
-together:
+Each poll also feeds the slice's watchdog, so the poll and the watchdog are
+checked together:
 
 - `slice_poll_s` must be at least 0.2 s, because a poll takes two 0.1 s
   controller ticks.
 - `watchdog_timeout_ms` must be between 3 × `slice_poll_s` and 65535 ms.
   Three polls must fit inside it.
-- `ezo_period_s` must be at least the slowest configured EZO read plus 0.2 s.
+
+`ezo_period_s` must be at least the slowest configured EZO read plus 0.2 s.
 
 The EZO read times are:
 
@@ -92,9 +93,9 @@ the whole file: a device and a channel cannot share a name either.
 
 ### RLHT heater slices
 
-An RLHT slice has two heater outputs, each with an onboard PID on one of two
-thermocouples. Its `channels` table names the outputs you use, with at least
-one channel:
+An RLHT slice has two outputs, each with an onboard PID on one of two
+thermocouples; a gen1 board has a heater relay on output 1 only. Its
+`channels` table names the outputs you use, with at least one channel:
 
 ```toml
 [[device]]
@@ -134,13 +135,15 @@ a slice keeps its last output. [safety.md](safety.md) explains the watchdog.
 
 ### DCMT motor slices
 
-openreactor does not drive DCMT slices yet. It accepts them in the file, and
-`run` and `serve` skip them with a note. A DCMT channel has a `label` and a
-`motor`, 1 or 2.
+openreactor does not drive DCMT slices yet. It accepts them in the file;
+`run` skips them with a note, and `serve` shows them as not supported. A
+DCMT channel has a `label` and a `motor`, 1 or 2.
 
 ### EZO sensors
 
-An EZO device is a single channel named after the device. pH, EC and DO
+An EZO device's readings are named after the device: `ph` for a pH circuit
+named `ph`. A circuit with several outputs names each one after it, such as
+`do.mg_l` and `do.saturation`. pH, EC and DO
 circuits can compensate for temperature with the reading from an `ezo-rtd`
 device, which `temp_comp` names:
 

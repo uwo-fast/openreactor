@@ -13,14 +13,15 @@ and what happens to the setpoints after each kind of fault.
 Flash [Slice_RLHT](https://github.com/feastorg/Slice_RLHT) commit `16a04dd`
 or later on every RLHT slice. With it, stop-all turns a heating output off at
 the slice's next control step. Earlier firmware keeps its PID integral
-through stop-all, so a running heater decays to off over several seconds.
+through stop-all, so a running heater decays to off over several seconds
+([feastorg/Slice_RLHT#13](https://github.com/feastorg/Slice_RLHT/issues/13)).
 openreactor cannot tell the two apart, because both report the same version.
 
 ## The slice and its watchdog
 
-Each RLHT slice runs its own PID for its two heater outputs. openreactor does
-not switch the heaters itself: it sends setpoints and reads the slice's
-state.
+Each RLHT slice runs its own PID for its two outputs; a gen1 board has a
+relay on output 1 only. openreactor does not switch the heaters itself: it
+sends setpoints and reads the slice's state.
 
 The slice has a command watchdog. When it hears nothing from openreactor for
 `watchdog_timeout_ms` (5 seconds by default), it stops its outputs. So if
@@ -44,9 +45,9 @@ last output if openreactor stops or the Pi loses power.
 4. If the slice has a watchdog, openreactor arms it with
    `watchdog_timeout_ms` and reads it back to confirm. If the watchdog does
    not arm, the slice is not used.
-5. It sets closed-loop mode, the thermocouple for each output, and any
-   periods and PID gains the configuration sets. It sends each one only if
-   the slice has that capability.
+5. It sets closed-loop mode, any periods the configuration sets, the
+   thermocouple for each output, and any PID gains the configuration sets.
+   It sends each one only if the slice has that capability.
 
 A slice that answered as an RLHT is included in stop-all from step 1 on, even
 if a later step fails. A slice that did not finish start-up is not polled,
@@ -83,9 +84,14 @@ print it as it happens.
 | E-stop released. | Logs `e-stop` `released`. | Still 0 until you set them again. |
 | E-stop that cuts the slice's power. | The slice reboots, so this is the reboot case. | 0 until you set them again. |
 | Stop-all, from the Stop all button, the API, Ctrl-C or SIGTERM. | Sends every slice its safe state. | 0 on every slice until you set them again. |
-| The slice runs other setpoints than wanted, with no trip or reboot behind it. | Reads the watchdog at once. If it finds no trip or reboot, logs `slice-setpoints-changed` and sends the slice its safe state. | 0 until you set them again. |
+| The slice runs other setpoints than wanted, with no trip or reboot behind it. | Reads the watchdog on the next tick. If it finds no trip or reboot, logs `slice-setpoints-changed` and sends the slice its safe state. A slice with no watchdog, or whose watchdog reads keep failing, gets the safe state without the check. | 0 until you set them again. |
 | The slice is unreachable: 3 polls failed in a row. | Logs `slice-unreachable`, and refuses setpoints. When the slice answers again, logs `slice-reachable` and reads its watchdog at once. | Unchanged. If the slice tripped or rebooted meanwhile, the trip or reboot case applies. |
 | openreactor is killed, or the Pi loses power. | Nothing. The slice's watchdog trips after `watchdog_timeout_ms` and stops its outputs. | openreactor sends the safe state at its next start-up. |
+
+After a watchdog trip, a heater resumes on its own: the slice kept its power,
+so openreactor sends the wanted setpoints again. A loose I2C cable that
+trips the watchdog therefore pauses heating and does not end it. After a
+reboot, an e-stop, stop-all or a drift, the setpoints stay at 0.
 
 openreactor does not restore setpoints when it starts again. It always
 starts a slice in its safe state.
@@ -113,10 +119,12 @@ setpoints for that slice with 409.
 ## Known limitations
 
 - A slice built with `RLHT_WATCHDOG_BOOT_MS` arms its watchdog at boot. Its
-  reboot shows as a trip only if the slice had tripped before. Otherwise
-  openreactor sees only that the setpoints changed, and sends the safe state:
-  the setpoints stay at 0, but mode, thermocouples, periods and gains are not
-  sent again. Follow
+  reboot shows as a trip only if the slice had tripped before. Otherwise,
+  if a setpoint was above 0, openreactor sees only that the setpoints
+  changed and sends the safe state; if the setpoints were 0, it sees
+  nothing. Either way the slice keeps the mode, thermocouples, periods,
+  gains and watchdog timeout it booted with, so restart `run` or `serve`
+  before you set a setpoint again. Follow
   [#53](https://github.com/uwo-fast/openreactor/issues/53).
 - openreactor cannot tell whether a slice runs firmware from before or after
   `16a04dd`. Follow
