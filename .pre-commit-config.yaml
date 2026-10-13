@@ -1,4 +1,5 @@
-# Vendored files are kept byte for byte as downloaded; see VENDORED.md.
+# Vendored files are kept byte for byte as downloaded; see
+# docs/development.md.
 exclude: ^src/openreactor/static/vendor/
 
 repos:

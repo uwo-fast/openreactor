@@ -58,6 +58,7 @@ channels.jacket = { label = "Jacket heater", output = 1, tc = 1 }
 # output.
 # allow_unprotected = false
 
+# openreactor does not drive DCMT slices yet: run and serve skip this one.
 # DCMT motor slice: two motors, each open-loop PWM or onboard speed or
 # position PID, depending on what the slice reports it can do.
 [[device]]
