@@ -12,7 +12,6 @@ import getpass
 import ipaddress
 import json
 import os
-import re
 import signal
 import sqlite3
 import sys
@@ -44,7 +43,7 @@ from openreactor.ezo import (
     calibration_status_steps,
     clear_calibration_steps,
 )
-from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld
+from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld, live_holder
 from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
 from openreactor.rlht import opened_slices
@@ -259,6 +258,11 @@ def _controller(
                 ch.port.close()
 
 
+def _print_os_error(e: OSError) -> None:
+    where = f"{e.filename}: " if e.filename else ""
+    print(f"error: {where}{e.strerror or e}", file=sys.stderr)
+
+
 def _device_command(run: Callable[[argparse.Namespace, Config], int]):
     """Wrap a device command so that it loads the config first.
 
@@ -287,8 +291,7 @@ def _device_command(run: Callable[[argparse.Namespace, Config], int]):
             print(f"error: {_database(config)}: {e}", file=sys.stderr)
             return 1
         except OSError as e:
-            where = f"{e.filename}: " if e.filename else ""
-            print(f"error: {where}{e.strerror or e}", file=sys.stderr)
+            _print_os_error(e)
             return 1
         except (KeyboardInterrupt, _Stop):
             if getattr(args, "follow", False):
@@ -710,33 +713,14 @@ def _status(args: argparse.Namespace) -> int:
 
 
 def _holder() -> str:
-    """Return who holds the bus, to explain why no server answered.
-
-    It reads the lock file without taking the lock, so a serve starting now
-    is never refused. A holder killed with -9 leaves its line behind, so
-    its pid is checked.
-    """
-    try:
-        text = Path(lock_path).read_text().strip()
-    except OSError:
-        text = ""
-    match = re.search(r"pid (\d+)", text)
-    if match is not None and _alive(int(match.group(1))):
-        return f"{text} holds the bus; for a server on another address, pass --url."
+    """Return who holds the bus, to explain why no server answered."""
+    holder = live_holder(lock_path)
+    if holder is not None:
+        return f"{holder} holds the bus; for a server on another address, pass --url."
     return (
         "Nothing holds the bus either: start openreactor serve. status reads "
         "only from a server, since reading a slice feeds its watchdog."
     )
-
-
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # another user's process
-    return True
 
 
 def _print_server_status(status: dict[str, Any], url: str) -> None:
@@ -744,13 +728,10 @@ def _print_server_status(status: dict[str, Any], url: str) -> None:
     devices = status.get("devices", [])
     if slices is None:
         print("(the server predates slice detail; its device status follows)")
-        for d in devices:
-            print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
-        print(f"(from the server at {url})")
-        return
-    _print_status(slices)
+    else:
+        _print_status(slices)
     for d in devices:
-        if d["kind"] != "rlht":
+        if slices is None or d["kind"] != "rlht":
             print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
     print(f"(from the server at {url})")
 
@@ -835,8 +816,7 @@ def _serve(args: argparse.Namespace) -> int:
         )
         return 1
     except OSError as e:
-        where = f"{e.filename}: " if e.filename else ""
-        print(f"error: {where}{e.strerror or e}", file=sys.stderr)
+        _print_os_error(e)
         return 1
     return 0
 

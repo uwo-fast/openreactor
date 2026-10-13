@@ -213,11 +213,16 @@ class _Parser:
             return None
         return value
 
-    def positive(self, value: Any, path: str) -> float | None:
+    def number(self, value: Any, path: str) -> float | None:
         if isinstance(value, bool) or not isinstance(value, int | float):
             self.error(path, "must be a number")
             return None
-        number = _float(value)
+        return _float(value)
+
+    def positive(self, value: Any, path: str) -> float | None:
+        number = self.number(value, path)
+        if number is None:
+            return None
         if not math.isfinite(number):
             self.error(path, "must be a finite number")
             return None
@@ -405,12 +410,6 @@ class _Parser:
         if not t:
             self.error(path, "must define at least one channel")
             return ()
-        out_key = OUTPUT_KEY[kind]
-        allowed = (
-            ("label", out_key, "tc", *GAINS, "period_ms", "max_setpoint")
-            if kind == "rlht"
-            else ("label", out_key)
-        )
         result: list[ChannelConfig] = []
         used: dict[int, str] = {}
         tuned: list[str] = []
@@ -420,67 +419,93 @@ class _Parser:
             if ch is None:
                 continue
             name_ok = self.name(ch_name, cpath)
-            self.unknown_keys(ch, allowed, cpath)
-            label = ch.get("label", ch_name)
-            if not isinstance(label, str) or not label:
-                self.error(f"{cpath}.label", "must be a non-empty string")
-                label = ch_name
-            output = self.one_or_two(ch, out_key, cpath)
-            tc = self.one_or_two(ch, "tc", cpath) if kind == "rlht" else None
-            if output is not None and output in used:
-                self.error(
-                    f"{cpath}.{out_key}", f"{out_key} {output} is already used by {used[output]!r}"
-                )
-            if output is not None:
-                used.setdefault(output, ch_name)
-            gains = self.gains(ch, cpath) if kind == "rlht" else None
-            period_ms = None
-            if kind == "rlht" and "period_ms" in ch:
-                period_ms = self.integer(ch["period_ms"], f"{cpath}.period_ms")
-                if period_ms is not None and not PERIOD_MIN_MS <= period_ms <= PERIOD_MAX_MS:
-                    self.error(
-                        f"{cpath}.period_ms",
-                        f"must be between {PERIOD_MIN_MS} and {PERIOD_MAX_MS}, the range the "
-                        "slice uses",
-                    )
-                    period_ms = None
-            max_setpoint = None
-            if kind == "rlht" and "max_setpoint" in ch:
-                max_setpoint = self.positive(ch["max_setpoint"], f"{cpath}.max_setpoint")
-                if max_setpoint is not None and max_setpoint > SETPOINT_MAX_C:
-                    self.error(
-                        f"{cpath}.max_setpoint",
-                        f"must be at most {SETPOINT_MAX_C}, the highest setpoint the slice takes",
-                    )
-                    max_setpoint = None
-            if gains is not None:
+            channel = self.channel(kind, ch_name, ch, cpath, used)
+            if channel.kp is not None:
                 tuned.append(ch_name)
             # Keep the channel even when a field failed, so its name is still
             # checked against the other devices; any error here fails the config.
             if name_ok:
-                kp, ki, kd = gains or (None, None, None)
-                result.append(
-                    ChannelConfig(
-                        name=ch_name,
-                        label=label,
-                        output=output or 0,
-                        tc=tc,
-                        kp=kp,
-                        ki=ki,
-                        kd=kd,
-                        period_ms=period_ms,
-                        max_setpoint=max_setpoint,
-                    )
-                )
-        if kind == "rlht" and tuned and (len(tuned) != len(t) or set(used) != {1, 2}):
-            # SET_PID sets both outputs' gains at once, and the slice cannot
-            # report its current ones, so the config gives all six or none.
+                result.append(channel)
+        if kind == "rlht" and tuned:
+            self.gains_on_both_outputs(path, tuned, len(t), set(used))
+        return tuple(result)
+
+    def channel(
+        self, kind: str, ch_name: str, ch: dict[str, Any], cpath: str, used: dict[int, str]
+    ) -> ChannelConfig:
+        """Parse one channel table, and record its output in ``used``.
+
+        A field that failed is left unset, or 0 for the output.
+        """
+        out_key = OUTPUT_KEY[kind]
+        allowed = (
+            ("label", out_key, "tc", *GAINS, "period_ms", "max_setpoint")
+            if kind == "rlht"
+            else ("label", out_key)
+        )
+        self.unknown_keys(ch, allowed, cpath)
+        label = ch.get("label", ch_name)
+        if not isinstance(label, str) or not label:
+            self.error(f"{cpath}.label", "must be a non-empty string")
+            label = ch_name
+        output = self.one_or_two(ch, out_key, cpath)
+        tc = self.one_or_two(ch, "tc", cpath) if kind == "rlht" else None
+        if output is not None and output in used:
+            self.error(
+                f"{cpath}.{out_key}", f"{out_key} {output} is already used by {used[output]!r}"
+            )
+        if output is not None:
+            used.setdefault(output, ch_name)
+        if kind != "rlht":
+            return ChannelConfig(name=ch_name, label=label, output=output or 0)
+        kp, ki, kd = self.gains(ch, cpath) or (None, None, None)
+        return ChannelConfig(
+            name=ch_name,
+            label=label,
+            output=output or 0,
+            tc=tc,
+            kp=kp,
+            ki=ki,
+            kd=kd,
+            period_ms=self.period_ms(ch, cpath),
+            max_setpoint=self.max_setpoint(ch, cpath),
+        )
+
+    def period_ms(self, ch: dict[str, Any], cpath: str) -> int | None:
+        if "period_ms" not in ch:
+            return None
+        period_ms = self.integer(ch["period_ms"], f"{cpath}.period_ms")
+        if period_ms is not None and not PERIOD_MIN_MS <= period_ms <= PERIOD_MAX_MS:
+            self.error(
+                f"{cpath}.period_ms",
+                f"must be between {PERIOD_MIN_MS} and {PERIOD_MAX_MS}, the range the slice uses",
+            )
+            return None
+        return period_ms
+
+    def max_setpoint(self, ch: dict[str, Any], cpath: str) -> float | None:
+        if "max_setpoint" not in ch:
+            return None
+        max_setpoint = self.positive(ch["max_setpoint"], f"{cpath}.max_setpoint")
+        if max_setpoint is not None and max_setpoint > SETPOINT_MAX_C:
+            self.error(
+                f"{cpath}.max_setpoint",
+                f"must be at most {SETPOINT_MAX_C}, the highest setpoint the slice takes",
+            )
+            return None
+        return max_setpoint
+
+    def gains_on_both_outputs(
+        self, path: str, tuned: list[str], channel_count: int, outputs: set[int]
+    ) -> None:
+        # SET_PID sets both outputs' gains at once, and the slice cannot
+        # report its current ones, so the config gives all six or none.
+        if len(tuned) != channel_count or outputs != {1, 2}:
             self.error(
                 path,
                 "gains (kp, ki, kd) must be set on a channel for each of the slice's two "
                 "outputs, or on none: the slice sets both outputs' gains at once",
             )
-        return tuple(result)
 
     def gains(self, ch: dict[str, Any], path: str) -> tuple[float, float, float] | None:
         """Return a channel's kp, ki and kd, which are set together or not at all.
@@ -499,11 +524,10 @@ class _Parser:
             return None
         values: list[float] = []
         for g in GAINS:
-            value = ch[g]
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                self.error(f"{path}.{g}", "must be a number")
+            value = self.number(ch[g], f"{path}.{g}")
+            if value is None:
                 return None
-            if not (math.isfinite(_float(value)) and 0 <= value <= GAIN_MAX):
+            if not (math.isfinite(value) and 0 <= value <= GAIN_MAX):
                 self.error(f"{path}.{g}", f"must be between 0 and {GAIN_MAX}")
                 return None
             if abs(value * 10 - round(value * 10)) > 1e-9:
@@ -519,7 +543,7 @@ class _Parser:
                     "and a heater can stay on after its setpoint goes to 0",
                 )
                 return None
-            values.append(float(value))
+            values.append(value)
         return values[0], values[1], values[2]
 
     def one_or_two(self, t: dict[str, Any], key: str, path: str) -> int | None:
@@ -535,6 +559,18 @@ class _Parser:
     def cross_checks(
         self, devices: list[tuple[str, DeviceConfig]], controller: ControllerConfig
     ) -> None:
+        by_name = self.unique_names_and_addresses(devices)
+        self.temp_comp_targets(devices, by_name)
+        self.watchdog_timing(controller)
+        self.ezo_timing(devices, controller)
+
+    def unique_names_and_addresses(
+        self, devices: list[tuple[str, DeviceConfig]]
+    ) -> dict[str, DeviceConfig]:
+        """Report reused names and bus addresses, and return the devices by name.
+
+        A device whose name is already taken is left out of the result.
+        """
         by_name: dict[str, DeviceConfig] = {}
         by_bus_address: dict[tuple[str, int], str] = {}
         # Device and channel names share one namespace: an EZO device is
@@ -564,7 +600,11 @@ class _Parser:
                         f"name {ch.name!r} is already used by {owner[ch.name]}",
                     )
                 owner.setdefault(ch.name, f"channel {ch.name!r} of {d.name!r}")
+        return by_name
 
+    def temp_comp_targets(
+        self, devices: list[tuple[str, DeviceConfig]], by_name: dict[str, DeviceConfig]
+    ) -> None:
         for path, d in devices:
             if d.temp_comp is None or d.temp_comp in self.invalid_names:
                 continue
@@ -577,36 +617,42 @@ class _Parser:
                     f"must name an ezo-rtd device; {d.temp_comp!r} is {target.kind}",
                 )
 
+    def watchdog_timing(self, controller: ControllerConfig) -> None:
+        if self.invalid_timing & {"slice_poll_s", "watchdog_timeout_ms"}:
+            return
         # Round so 0.1 s x 3 is exactly 300 ms. A huge poll overflows to inf,
         # so compare with the limit before rounding up to whole milliseconds.
         three_polls_ms = round(3 * controller.slice_poll_s * 1000, 6)
-        timing_ok = not self.invalid_timing & {"slice_poll_s", "watchdog_timeout_ms"}
-        if timing_ok and three_polls_ms > WATCHDOG_MAX_MS:
+        if three_polls_ms > WATCHDOG_MAX_MS:
             self.error(
                 "controller.slice_poll_s",
                 f"must be at most {WATCHDOG_MAX_MS / 3000:g} s, so that 3 polls fit in "
                 f"the longest watchdog timeout, {WATCHDOG_MAX_MS} ms",
             )
-        elif timing_ok and not (
-            math.ceil(three_polls_ms) <= controller.watchdog_timeout_ms <= WATCHDOG_MAX_MS
-        ):
+        elif not math.ceil(three_polls_ms) <= controller.watchdog_timeout_ms <= WATCHDOG_MAX_MS:
             self.error(
                 "controller.watchdog_timeout_ms",
                 f"must be between 3 x slice_poll_s ({math.ceil(three_polls_ms)} ms) "
                 f"and {WATCHDOG_MAX_MS} ms",
             )
 
+    def ezo_timing(
+        self, devices: list[tuple[str, DeviceConfig]], controller: ControllerConfig
+    ) -> None:
+        if "ezo_period_s" in self.invalid_timing:
+            return
         ezo_reads = [
             (EZO_TEMP_COMP_READ_MS[d.kind] if d.temp_comp else EZO_READ_MS[d.kind], d.name)
             for _, d in devices
             if d.kind in EZO_KINDS
         ]
-        if ezo_reads and "ezo_period_s" not in self.invalid_timing:
-            slowest_ms, slowest = max(ezo_reads)
-            min_period_ms = slowest_ms + EZO_PERIOD_MARGIN_MS
-            if round(controller.ezo_period_s * 1000, 6) < min_period_ms:
-                self.error(
-                    "controller.ezo_period_s",
-                    f"must be at least {min_period_ms / 1000:g} s: a read from {slowest!r} "
-                    f"takes {slowest_ms} ms, plus {EZO_PERIOD_MARGIN_MS} ms",
-                )
+        if not ezo_reads:
+            return
+        slowest_ms, slowest = max(ezo_reads)
+        min_period_ms = slowest_ms + EZO_PERIOD_MARGIN_MS
+        if round(controller.ezo_period_s * 1000, 6) < min_period_ms:
+            self.error(
+                "controller.ezo_period_s",
+                f"must be at least {min_period_ms / 1000:g} s: a read from {slowest!r} "
+                f"takes {slowest_ms} ms, plus {EZO_PERIOD_MARGIN_MS} ms",
+            )
