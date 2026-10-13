@@ -23,9 +23,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from openreactor.config import SETPOINT_MAX_C, SLICE_KINDS
+from openreactor.config import SLICE_KINDS
+from openreactor.errors import HANDLED, error_detail, error_status
 from openreactor.ezo import FAMILIES
-from openreactor.service import Service
+from openreactor.security import NoFraming, authorize
+from openreactor.service import Service, setpoint_limit
 
 HERE = Path(__file__).parent
 SOURCE_URL = "https://github.com/uwo-fast/openreactor"
@@ -46,18 +48,12 @@ def page_access(request: Request) -> None:
         raise SignInFirst
 
 
-def _authorize(request: Request) -> None:
-    from openreactor.web import authorize
-
-    authorize(request)
-
-
 def _service(request: Request) -> Service:
     return request.app.state.service
 
 
 pages = APIRouter(include_in_schema=False, dependencies=[Depends(page_access)])
-actions = APIRouter(prefix="/ui", include_in_schema=False, dependencies=[Depends(_authorize)])
+actions = APIRouter(prefix="/ui", include_in_schema=False, dependencies=[Depends(authorize)])
 
 
 def _vendored() -> list[dict[str, str]]:
@@ -90,7 +86,7 @@ def _actuated(svc: Service) -> list[dict[str, Any]]:
             "label": ch.label,
             "device": d.name,
             "kind": d.kind,
-            "max": ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C,
+            "max": setpoint_limit(ch),
         }
         for d in svc.config.devices
         if d.kind in SLICE_KINDS
@@ -156,25 +152,16 @@ def _notice(request: Request, message: str, *, ok: bool, status_code: int = 200)
     return _render(request, "_notice.html", status_code=status_code, message=message, ok=ok)
 
 
-def _errors() -> tuple[tuple[type[Exception], int], ...]:
-    from openreactor.web import ERRORS
-
-    return ERRORS
-
-
 def _error_notice(request: Request, exc: Exception) -> HTMLResponse:
     """Render the error as the API would report it, with the API's status."""
-    from openreactor.web import error_detail
-
-    code = next(c for e, c in _errors() if isinstance(exc, e))
-    return _notice(request, error_detail(exc), ok=False, status_code=code)
+    return _notice(request, error_detail(exc), ok=False, status_code=error_status(exc))
 
 
 async def _act(request: Request, work: Callable[[], str], *, changes: bool = True) -> HTMLResponse:
     """Run ``work`` off the event loop and render its message or its error."""
     try:
         message = await run_in_threadpool(work)
-    except tuple(e for e, _ in _errors()) as exc:
+    except HANDLED as exc:
         return _error_notice(request, exc)
     response = _notice(request, message, ok=True)
     if changes:
@@ -193,7 +180,7 @@ def runs_partial(request: Request) -> HTMLResponse:
     svc = _service(request)
     try:
         runs = list(reversed(svc.runs()))
-    except tuple(e for e, _ in _errors()) as exc:
+    except HANDLED as exc:
         return _error_notice(request, exc)
     return _render(
         request,
@@ -210,7 +197,7 @@ async def stop_all(request: Request) -> HTMLResponse:
 
     try:
         events = await run_in_threadpool(svc.stop_all)
-    except tuple(e for e, _ in _errors()) as exc:
+    except HANDLED as exc:
         return _error_notice(request, exc)
     failed = [e for e in events if e.result != "ok"]
     if failed:
@@ -281,32 +268,6 @@ async def calibrate(request: Request, device: str) -> HTMLResponse:
 async def clear_calibration(request: Request, device: str) -> HTMLResponse:
     svc = _service(request)
     return await _act(request, lambda: f"{device}: {svc.clear_calibration(device)}")
-
-
-class NoFraming:
-    """Forbid other sites from framing any page.
-
-    Without a password, a page framed on another site could otherwise be
-    clicked through.
-    """
-
-    def __init__(self, app: Any):
-        self.app = app
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        async def framed_send(message: Any) -> None:
-            if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.append((b"x-frame-options", b"DENY"))
-                headers.append((b"content-security-policy", b"frame-ancestors 'none'"))
-                message = {**message, "headers": headers}
-            await send(message)
-
-        await self.app(scope, receive, framed_send)
 
 
 def install(app: FastAPI) -> None:
