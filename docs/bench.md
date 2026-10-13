@@ -31,6 +31,19 @@ On 64-bit Raspberry Pi OS (Bookworm or Trixie):
    sudo apt install -y git i2c-tools
    ```
 
+   On a Pi 4, also add these lines to `/boot/firmware/config.txt` and reboot:
+
+   ```ini
+   dtparam=i2c_arm_baudrate=50000
+   core_freq_min=500
+   ```
+
+   The Pi 4 divides the I2C clock from a core clock that its firmware scales,
+   so without the pin the configured rate is only a ceiling. With it, 50 kHz
+   was the only rate CRUMBS measured clean on a Pi 4; faster ones corrupted
+   replies or lost writes
+   ([CRUMBS platform setup](https://github.com/feastorg/CRUMBS/blob/main/docs/platform-setup.md#the-ic-bus)).
+
 2. Put every EZO circuit in I2C mode. They ship in UART mode. To switch one by
    hand: power off, disconnect TX and RX, connect TX to PGND, power on, and
    wait for the LED to go from green to blue; then power off and reconnect.
