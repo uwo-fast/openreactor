@@ -12,6 +12,7 @@ import contextlib
 import fcntl
 import getpass
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -90,3 +91,30 @@ class ControllerLock:
 
     def __exit__(self, *exc: object) -> None:
         self.release()
+
+
+def live_holder(path: Path = LOCK_PATH) -> str | None:
+    """Return the line the lock's holder recorded, or None if no live process holds it.
+
+    It reads the file without taking the lock, so a controller starting now
+    is never refused. A holder killed with -9 leaves its line behind, so its
+    pid is checked.
+    """
+    try:
+        text = Path(path).read_text().strip()
+    except OSError:
+        return None
+    match = re.search(r"pid (\d+)", text)
+    if match is not None and _alive(int(match.group(1))):
+        return text
+    return None
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's process
+    return True
