@@ -191,12 +191,16 @@ def channels_partial(request: Request) -> HTMLResponse:
 @actions.get("/runs", response_class=HTMLResponse)
 def runs_partial(request: Request) -> HTMLResponse:
     svc = _service(request)
+    try:
+        runs = list(reversed(svc.runs()))
+    except tuple(e for e, _ in _errors()) as exc:
+        return _error_notice(request, exc)
     return _render(
         request,
         "_runs.html",
         run=svc.current_run(),
         recording_failed=svc.recording_failed(),
-        runs=list(reversed(svc.runs())),
+        runs=runs,
     )
 
 

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_web import LOCAL, PASSWORD, Bench, until
 
+from openreactor.storage import StorageError
 from openreactor.ui import SOURCE_URL
 
 PAGES = ["/", "/controls", "/runs", "/devices", "/about"]
@@ -185,6 +186,21 @@ def test_a_bad_calibration_is_explained(ui):
     )
     assert r.status_code == 422
     assert not any(s.startswith("cal ") for s in bench.port.sent)
+
+
+def test_a_runs_list_that_cannot_be_read_is_shown_as_a_notice(ui, monkeypatch):
+    """htmx swaps the answer into the runs list: a notice, not JSON."""
+    bench, client = ui
+
+    def changed():
+        raise StorageError("the database changed while it was being read (a run started)")
+
+    monkeypatch.setattr(bench.app.state.service, "runs", changed)
+    r = client.get("/ui/runs", headers=HX)
+    assert r.status_code == 503
+    assert r.headers["content-type"].startswith("text/html")
+    assert 'class="alert alert-danger' in r.text
+    assert "the database changed while it was being read" in r.text
 
 
 def test_what_the_operator_types_is_escaped(ui):
