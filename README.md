@@ -87,7 +87,11 @@ channels' temperature, setpoint and duty are read and recorded like any
 sensor. Every fifth poll also reads the slice's watchdog. A reboot (the
 watchdog disarmed) or a trip (tripped, or a changed trip count) is logged, and
 the desired state is sent again: mode, setpoints, periods, thermocouples, gains,
-and the watchdog armed. The next poll checks that it took; if it did not, that
+and the watchdog armed. After a reboot the setpoints stay at zero until the
+operator sets them again, since an e-stop that cuts the slice's power looks
+the same (#62). The same holds when the trip count went down, which is how a
+reboot of a build that arms at boot shows. The next poll checks that the
+desired state took; if it did not, that
 is logged and it is sent again at the next scheduled check, and if sending
 failed, at the next poll. A watchdog read that fails is tried again after the
 next poll; after 3 in a row that is logged, and it waits for its usual slot.
@@ -113,8 +117,8 @@ is held, the slice is read-only, or a change in its setpoints is being
 checked (409, for a moment; see below), and while it is unreachable or did
 not finish start-up (503). A send that fails answers 502, since the slice may
 have taken it. Each one sent, or tried, is an event in the run. It stays the
-desired setpoint, sent again after a trip or a reboot, until it is set again
-or stop-all or an e-stop zeroes it. It is not restored after a restart.
+desired setpoint, sent again after a trip, until it is set again or
+stop-all, an e-stop or a reboot zeroes it. It is not restored after a restart.
 
 `openreactor status` shows each RLHT slice: its firmware, state, watchdog,
 e-stop, mode, and each output's temperature, setpoint, duty and

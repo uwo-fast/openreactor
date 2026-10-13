@@ -694,6 +694,7 @@ class RlhtSlice:
         if not watchdog.armed:
             what = "slice-reboot"
             details = f"watchdog disarmed (trips {watchdog.trip_count})"
+            rebooted = True
         elif watchdog.tripped or watchdog.trip_count != baseline:
             # A count below the baseline with the watchdog armed is the u8
             # counter wrapping, or a build that arms at boot: either way the
@@ -703,6 +704,7 @@ class RlhtSlice:
                 f"watchdog tripped (tripped={watchdog.tripped}, "
                 f"trips {baseline} -> {watchdog.trip_count})"
             )
+            rebooted = watchdog.trip_count < baseline
         else:
             # Only if the desired setpoints are still the ones that GET_STATE
             # disagreed with: one set since is judged by the next GET_STATE.
@@ -710,6 +712,12 @@ class RlhtSlice:
             if last is None or against is None or against != self.setpoints_deci:
                 return []
             return self._drop(last)
+        if rebooted:
+            # A slice whose power was cut, by an e-stop wired to the
+            # backplane among others, reboots: nothing resumes until the
+            # operator sets a setpoint again (#62).
+            self.setpoints_deci = [0, 0]
+            details += "; setpoints stay at 0 until set again"
         if confirming:
             # The last re-assert did not take. Say so, and wait for the next
             # scheduled check rather than re-asserting at once.
