@@ -9,8 +9,8 @@ the openreactor and library versions, and the firmware commit on each slice.
 | Firmware commits flashed on each slice | 2026-10-12 | 2.0.0a1 (ade88dc) | crumbs-i2c 0.15.0, bread-crumbs-contracts 0.5.0, ezo-driver 0.6.0 | Slice_RLHT 4383bd9 (`gen1_nano`); 2× Slice_DCMT 44966b3 | RLHT flashed. The DCMTs are not exercised until #25 |
 | Version and caps reported as expected | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: RLHT 1.0.0, CRUMBS 0.12.5, caps 0x7F |
 | Watchdog armed, and it trips when the process is killed | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: armed at 5000 ms. After `kill -9` at ~400 ms on per 1000 ms, the relay went off ~5 s later, by eye. The trip count went 1, then 2, over two kills, and each restart re-armed the watchdog |
-| Desired state re-asserted after a slice power-cycle | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: backplane power cut for ~10 s at a 40 °C setpoint gave `slice-reboot` `re-asserted`, and the relay resumed |
-| E-stop pressed and released resumes nothing | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Fail for an e-stop that cuts backplane power: on release the relay resumes at the old setpoint (#62). The ESTOP-pin e-stop is not tested on this rig |
+| Desired state re-asserted after a slice power-cycle | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass on ade88dc: backplane power cut for ~10 s at a 40 °C setpoint gave `slice-reboot` `re-asserted`, and the relay resumed. Since #62 the setpoints stay at 0 after a reboot; re-test pending |
+| E-stop pressed and released resumes nothing | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Fail for an e-stop that cuts backplane power: on release the relay resumes at the old setpoint (#62; fixed on main since, re-test pending). The ESTOP-pin e-stop is not tested on this rig |
 | Stop-all from the UI, the API and `systemctl stop` | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass, all three. `systemctl --user stop` of a transient `systemd-run` unit (none ships yet, #29): stop-all 91 ms later, and the relay went off at once |
 | Time from stop-all to the relay off, on a heating RLHT output (#51) | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: relay off at once, by eye. The API answered in 91 ms, and a status read 1 s later showed `on_ms 0`. Relay only, no heater wired |
 | Each EZO family reads, with temperature compensation applied | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | EZO pH 2.15, DO 2.17 | pH and DO read, exit 0. Compensation not tested: no RTD on this rig |
@@ -19,74 +19,18 @@ the openreactor and library versions, and the firmware commit on each slice.
 | The API from another machine on the lab network, signed in | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: a wrong password was refused (401). Signed in, the UI set a setpoint and ran Stop all |
 | A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | Waits on #28 |
 
-## Preparing a Pi
+## Before you start
 
-On 64-bit Raspberry Pi OS (Bookworm or Trixie):
+Prepare the Pi and install openreactor as [install.md](install.md)
+describes, with a configuration that lists the rig's devices. openreactor
+does not drive DCMT slices until
+[#25](https://github.com/uwo-fast/openreactor/issues/25).
 
-1. Enable I2C and give your user access to it, then log out and back in:
+## How to run the controller lock check
 
-   ```sh
-   sudo raspi-config nonint do_i2c 0
-   sudo usermod -aG i2c "$USER"
-   sudo apt install -y git i2c-tools
-   ```
-
-   On a Pi 4, also add these lines to `/boot/firmware/config.txt` and reboot:
-
-   ```ini
-   dtparam=i2c_arm_baudrate=50000
-   core_freq_min=500
-   ```
-
-   The Pi 4 divides the I2C clock from a core clock that its firmware scales,
-   so without the pin the configured rate is only a ceiling. With it, 50 kHz
-   was the only rate CRUMBS measured clean on a Pi 4; faster ones corrupted
-   replies or lost writes
-   ([CRUMBS platform setup](https://github.com/feastorg/CRUMBS/blob/main/docs/platform-setup.md#the-ic-bus)).
-
-2. Put every EZO circuit in I2C mode. They ship in UART mode. To switch one by
-   hand: power off, disconnect TX and RX, connect TX to PGND, power on, and
-   wait for the LED to go from green to blue; then power off and reconnect.
-   Each circuit comes up at its family's default address:
-
-   | Family | Address |
-   |---|---|
-   | pH | 0x63 |
-   | ORP | 0x62 |
-   | EC | 0x64 |
-   | DO | 0x61 |
-   | RTD | 0x66 |
-   | HUM | 0x6F |
-
-   `i2cdetect -y 1` should then list each one.
-
-3. Install openreactor from a checkout. ezo-driver comes as a wheel for the
-   Pi's aarch64, so nothing is compiled:
-
-   ```sh
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   git clone https://github.com/uwo-fast/openreactor.git
-   cd openreactor
-   uv sync
-   ```
-
-4. Copy `examples/openreactor.toml`, keep the EZO devices you have with their
-   addresses, and check it:
-
-   ```sh
-   uv run openreactor check-config ~/openreactor.toml
-   uv run openreactor read -c ~/openreactor.toml
-   ```
-
-   A circuit that is missing, at the wrong address or of the wrong family is
-   reported by name, and the others are still read. `read` never touches a
-   slice; `run` and `serve` start the RLHT slices, and DCMT slices are skipped
-   with a note until #25.
-
-5. Check the controller lock across users: run `openreactor read --follow` as
-   one user, then `sudo openreactor read` in another terminal. The second
-   must refuse, naming the first. After the first exits, `sudo openreactor
-   read` must work.
+Run `openreactor read --follow` as one user, then `sudo openreactor read` in
+another terminal. The second must refuse, naming the first. After the first
+exits, `sudo openreactor read` must work.
 
 ## How to run the EZO checks
 
