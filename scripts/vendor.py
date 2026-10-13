@@ -72,7 +72,7 @@ def update() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--check", action="store_true", help="verify only; no network")
     return check() if parser.parse_args().check else update()
 
