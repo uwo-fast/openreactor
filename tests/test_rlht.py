@@ -472,7 +472,9 @@ def test_a_tripped_flag_is_a_trip():
     assert events(seen, "slice-trip")
 
 
-def test_a_reboot_is_re_asserted_with_the_desired_setpoints():
+def test_a_reboot_re_asserts_the_configuration_and_keeps_setpoints_at_zero():
+    # A reboot looks the same as an e-stop that cuts the slice's power, so
+    # nothing resumes until the operator sets a setpoint again (#62).
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
@@ -483,25 +485,47 @@ def test_a_reboot_is_re_asserted_with_the_desired_setpoints():
     tick(c, clock, 10.0)
     [event] = events(seen, "slice-reboot")
     assert event.result == "re-asserted"
+    assert "setpoints stay at 0 until set again" in event.details
     assert ops(rlht).count(SET_WATCHDOG) == 1 and rlht.armed == 1
-    assert rlht.setpoints == [370, 0]
+    assert SET_MODE in ops(rlht) and SET_TC in ops(rlht)
+    assert rlht.setpoints == [0, 0] and s.setpoints_deci == [0, 0]
+    assert s.status().desired_c == (0.0, 0.0)
     # A poll every second throughout: the re-assert never pre-empts one.
     assert rlht.state_replies - polls >= 9
 
 
-def test_a_count_below_the_baseline_while_armed_is_a_trip():
-    # The u8 counter wrapping, or a build that arms its watchdog at boot.
+def test_a_count_below_the_baseline_while_armed_is_a_trip_that_keeps_setpoints_at_zero():
+    # The u8 counter wrapping, or a build that arms its watchdog at boot and
+    # so comes back from a power cut armed with its count at 0: the second
+    # is a reboot, so this is treated as one.
     rlht = FakeRlht()
     rlht.trip_count = 255
     s, clock = started(rlht)
     c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 370)
     rlht.trip()
     rlht.tripped = 0  # cleared since by a command (feastorg/Slice_RLHT#9)
     assert rlht.trip_count == 0
     tick(c, clock, 6.0)
     [trip] = events(seen, "slice-trip")
     assert trip.result == "re-asserted" and "trips 255 -> 0" in trip.details
+    assert "setpoints stay at 0 until set again" in trip.details
     assert not events(seen, "slice-reboot")
+    assert rlht.setpoints == [0, 0] and s.setpoints_deci == [0, 0]
+
+
+def test_a_boot_armed_slice_that_lost_power_does_not_resume():
+    rlht = FakeRlht()
+    rlht.trip_count = 3
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    s.set_setpoint(1, 370)
+    rlht.reboot()
+    rlht.armed, rlht.timeout_ms = 1, 5000  # RLHT_WATCHDOG_BOOT_MS
+    tick(c, clock, 6.0)
+    [trip] = events(seen, "slice-trip")
+    assert trip.result == "re-asserted" and "trips 3 -> 0" in trip.details
+    assert rlht.setpoints == [0, 0] and s.setpoints_deci == [0, 0]
 
 
 def test_a_re_assert_that_does_not_take_is_reported_and_not_repeated_each_tick():
@@ -780,9 +804,9 @@ def test_a_setpoint_is_sent_at_once_and_kept_for_a_re_assert():
         (SET_SETPOINTS, struct.pack("<hh", 370, 0)),
         (SET_SETPOINTS, struct.pack("<hh", 370, 450)),
     ]
-    rlht.reboot()
+    rlht.trip()
     tick(c, clock, 6.0)
-    assert events(seen, "slice-reboot")[-1].result == "re-asserted"
+    assert events(seen, "slice-trip")[-1].result == "re-asserted"
     assert rlht.setpoints == [370, 450]
 
 
@@ -794,7 +818,7 @@ def test_a_setpoint_that_is_not_sent_is_not_kept():
     with pytest.raises(SliceError, match="no answer on the bus"):
         s.set_setpoint(1, 370)
     del rlht.fail_opcodes[SET_SETPOINTS]
-    rlht.reboot()
+    rlht.trip()
     tick(c, clock, 6.0)
     # The re-assert sends what was last set successfully, not the failure.
     assert rlht.setpoints == [0, 0]

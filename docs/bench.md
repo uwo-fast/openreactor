@@ -173,14 +173,16 @@ curl -s -X PUT localhost:8080/api/v1/channels/jacket/setpoint \
    again, a `slice-trip` event with result `re-asserted`.
 4. **Re-assert after a power-cycle:** power-cycle the slice while openreactor
    runs with a setpoint set. A `slice-reboot` event with result
-   `re-asserted`, the channel's setpoint reading shows it again, and
-   `openreactor status` shows closed loop and the configured thermocouples.
-   This is for a default build, which boots disarmed. A build with
-   `RLHT_WATCHDOG_BOOT_MS` gives a `slice-trip` instead, and only if it had
-   tripped before (#53).
+   `re-asserted`, the channel's setpoint reading stays at 0 and the relay
+   stays off, and `openreactor status` shows closed loop and the configured
+   thermocouples. This is for a default build, which boots disarmed. A build
+   with `RLHT_WATCHDOG_BOOT_MS` gives a `slice-trip` instead, and only if it
+   had tripped before (#53).
 5. **E-stop:** press the slice's e-stop. An `e-stop` event with result `held`,
    then stop-all; the relays stay off. Release it: an `e-stop` event with
-   result `released`, and the setpoints stay at 0.
+   result `released`, and the setpoints stay at 0. On a rig whose e-stop
+   cuts the backplane's power instead, release gives step 4's event, and
+   the relay stays off.
 6. **Unreachable:** disconnect the slice's I2C. After 3 failed polls, a
    `slice-unreachable` event, and `openreactor status` shows it unreachable.
    Reconnect it: a `slice-reachable` event, and the watchdog is checked at
