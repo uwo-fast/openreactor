@@ -46,7 +46,7 @@ from openreactor.config import Config
 from openreactor.errors import ERRORS, error_detail
 from openreactor.rlht import SliceStatus
 
-# The tests import it from here.
+# web.py does not use MAX_BODY_BYTES itself; tests import it from here.
 from openreactor.security import MAX_BODY_BYTES as MAX_BODY_BYTES
 from openreactor.security import (
     SESSION_COOKIE,

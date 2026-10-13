@@ -7,11 +7,14 @@ and framing. The password check itself, ``Gate``, lives in ``web``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
+
+if TYPE_CHECKING:
+    from openreactor.web import Gate
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -203,7 +206,7 @@ def authorize(request: Request) -> None:
 
     Every API route, every UI action and the API docs depend on this.
     """
-    gate = request.app.state.gate
+    gate: Gate = request.app.state.gate
     if gate.open:
         check_origin(request, by_cookie=False)
         return
