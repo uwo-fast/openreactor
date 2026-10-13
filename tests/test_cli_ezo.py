@@ -105,7 +105,9 @@ def test_read_once_prints_every_channel(config: str, ports, capsys: pytest.Captu
         "do.mg_l                       8.120 mg/L",
         "do.saturation                97.400 %",
     ]
-    assert err == "note: not reading heater: slices are not read yet\n"
+    assert err == (
+        "note: not reading heater: read covers EZO circuits; run and serve poll the slices\n"
+    )
     assert all(p.closed for p in ports.values())
 
 

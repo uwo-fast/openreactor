@@ -309,7 +309,11 @@ def _ezo_devices(args: argparse.Namespace, config: Config) -> list[DeviceConfig]
         print(f"error: {args.config} lists no EZO devices", file=sys.stderr)
         return None
     if skipped:
-        print(f"note: not reading {', '.join(skipped)}: slices are not read yet", file=sys.stderr)
+        print(
+            f"note: not reading {', '.join(skipped)}: read covers EZO circuits; "
+            "run and serve poll the slices",
+            file=sys.stderr,
+        )
     return devices
 
 
