@@ -43,7 +43,7 @@ flowchart TD
     client["Script"] -->|"/api/v1"| web["web.py"]
     ui --> service["service.py"]
     web --> service
-    service -->|"commands"| controller["controller.py<br/>one thread, 100 ms tick"]
+    service -->|"commands"| controller["controller.py<br/>100 ms tick"]
     cli["cli.py<br/>read, run, ezo cal"] --> controller
     controller --> rlht["rlht.py<br/>RLHT slices"]
     controller --> ezo["ezo.py<br/>EZO circuits"]
@@ -52,20 +52,24 @@ flowchart TD
     controller -->|"readings and events"| recorder["storage.py<br/>Recorder"]
     recorder --> db[("SQLite")]
     service -->|"list and export, read-only"| db
+    cli -->|"runs and export, read-only"| db
 ```
 
-- `controller.py` is the only code that touches the bus. Its thread runs
-  every device operation, so other threads send it commands and get a
-  `Future` back.
-- `serve` runs `web.py` and `ui.py` over `service.py`. `security.py` checks
-  every request first, and `errors.py` turns the service's errors into
-  HTTP statuses.
+- Once it is running, `controller.py` is the only code that touches the
+  bus: every device operation runs on its tick, so other code sends it
+  commands and gets a `Future` back. In `serve` the tick runs on a thread
+  of its own; in the CLI it runs on the main thread. The circuits and
+  slices are opened and checked before the controller starts, and closed
+  after it stops.
+- `serve` runs `web.py` and `ui.py` over `service.py`. The middleware in
+  `security.py` sees every request first, and `errors.py` turns the errors
+  an action can raise into HTTP statuses.
 - `read`, `run` and `ezo cal` build a controller in `cli.py` and use it
   directly, without the service.
-- Only the controller's thread writes to the database, through the
-  `Recorder` it publishes to.
-- `lock.py` keeps a second `serve` or CLI command from opening the bus while
-  one already has it.
+- While a run records, the controller's thread is the database's only
+  writer, through the `Recorder` it publishes to.
+- `lock.py` keeps a second `serve`, `read`, `run` or `ezo cal` from opening
+  the bus while one already has it.
 
 ## Tests
 
