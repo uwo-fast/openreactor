@@ -1,7 +1,8 @@
-"""The shared password: hashed with stdlib scrypt, checked in constant time.
+"""Hash the shared password with stdlib scrypt and check it in constant time.
 
 A hash looks like ``scrypt$<n>$<r>$<p>$<salt>$<key>``, base64 for the last
-two, so the cost parameters can change later without breaking old hashes.
+two. It carries its cost parameters, so they can change later without
+breaking old hashes.
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ def hash_password(password: str) -> str:
 
 
 def _parse(stored: str) -> tuple[int, int, int, bytes, bytes] | None:
-    """The cost, salt and key of a hash this module would write, or None.
-    Costs outside fixed bounds are refused rather than attempted."""
+    """Return the cost, salt and key of a hash this module would write, or None.
+
+    Costs outside fixed bounds are refused rather than attempted.
+    """
     try:
         scheme, n, r, p, salt, key = stored.split("$")
         cost = int(n), int(r), int(p)
@@ -48,8 +51,7 @@ def _parse(stored: str) -> tuple[int, int, int, bytes, bytes] | None:
 
 
 def verify_password(password: str, stored: str) -> bool:
-    """True if ``password`` matches ``stored``. A malformed hash never
-    matches."""
+    """Return True if ``password`` matches ``stored``; a malformed hash never matches."""
     parsed = _parse(stored)
     if parsed is None:
         return False
@@ -58,5 +60,5 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def looks_like_hash(stored: str) -> bool:
-    """True if ``stored`` is a hash verify_password can check."""
+    """Return True if ``stored`` is a hash verify_password can check."""
     return _parse(stored) is not None

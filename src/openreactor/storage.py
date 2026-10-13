@@ -1,4 +1,4 @@
-"""Runs, readings and events in SQLite.
+"""Store runs, readings and events in SQLite.
 
 The controller's thread is the only writer: a ``Recorder`` subscribes to the
 controller and writes what it publishes. Storage must never stop control, so
@@ -77,8 +77,10 @@ CREATE TABLE profiles (
 
 
 def default_path() -> Path:
-    """``$XDG_STATE_HOME/openreactor/openreactor.db``, else under
-    ``~/.local/state``. An installed service sets ``storage.database``."""
+    """Return ``$XDG_STATE_HOME/openreactor/openreactor.db``, else under ``~/.local/state``.
+
+    An installed service sets ``storage.database``.
+    """
     base = os.environ.get("XDG_STATE_HOME", "")
     if not base.startswith("/"):  # the XDG spec says to ignore a relative one
         base = str(Path.home() / ".local" / "state")
@@ -86,7 +88,11 @@ def default_path() -> Path:
 
 
 class StorageError(Exception):
-    """The database cannot be used: the wrong schema version, or unreadable."""
+    """The database cannot be used as asked.
+
+    It does not exist yet, has another schema version, changed during an
+    immutable read, or has no such run to export.
+    """
 
 
 @dataclass(frozen=True)
@@ -115,8 +121,10 @@ SETUP_WAIT_S = 5.0
 
 
 class Store:
-    """One SQLite database in WAL mode. ``read_only`` opens an existing
-    database for listing and export, without creating or changing it."""
+    """One SQLite database in WAL mode.
+
+    ``read_only`` opens an existing one for listing and export, unchanged.
+    """
 
     def __init__(
         self, path: Path, wall: Callable[[], float] = time.time, *, read_only: bool = False
@@ -133,8 +141,9 @@ class Store:
             self._check_version(self._db.execute("PRAGMA user_version").fetchone()[0])
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False: the CLI opens it, the controller's thread
-        # (the only writer) uses it.
+        # check_same_thread=False: the CLI opens it for the controller's
+        # thread to write, and the service opens it on the controller's
+        # thread and closes it from the main thread at shutdown.
         self._db = sqlite3.connect(
             path, check_same_thread=False, isolation_level=None, timeout=SETUP_WAIT_S
         )
@@ -197,8 +206,7 @@ class Store:
         return (st.st_size, st.st_mtime_ns, wal, shm)
 
     def _check_unchanged(self) -> None:
-        """An immutable read is only sound if no writer opened the database
-        while it ran."""
+        """Raise StorageError if a writer opened the database during an immutable read."""
         if self._immutable and self._file_state() != self._snapshot:
             raise StorageError(
                 "the database changed while it was being read (a run started); try again"
@@ -233,8 +241,11 @@ class Store:
     # Runs
 
     def interrupt_stale_runs(self) -> list[int]:
-        """Runs still marked running belong to a process that did not end
-        them (a crash, a power cut); they are never resumed."""
+        """Mark every run still marked running as interrupted, and return their ids.
+
+        Such runs belong to a process that did not end them, after a crash or
+        a power cut. They are never resumed.
+        """
         rows = self._db.execute("SELECT id FROM runs WHERE status = 'running'").fetchall()
         ids = [r[0] for r in rows]
         if ids:
@@ -275,18 +286,17 @@ class Store:
     # Readings and events
 
     def recording(self) -> None:
-        """From here on, writes come from the controller's tick: a write
-        that cannot get the database lock quickly fails instead of waiting."""
+        """Make a write that cannot get the lock quickly fail, for the controller's tick."""
         self._wait(WRITE_WAIT_S)
 
     def setup(self) -> None:
-        """Back to waiting patiently, for starting or ending a run."""
+        """Let writes wait for the lock again, for starting or ending a run."""
         self._wait(SETUP_WAIT_S)
 
     def add_readings(
         self, run: int, device: str, kind: str, at: float, values: list[tuple[str, str, float]]
     ) -> None:
-        """All of one reading's ``(channel, unit, value)`` outputs, or none."""
+        """Write all of one reading's ``(channel, unit, value)`` outputs, or none."""
         with self._transaction():
             for channel, unit, value in values:
                 self._db.execute(
@@ -319,8 +329,7 @@ class Store:
     # Export
 
     def export(self, run: int, destination: Path) -> None:
-        """Write ``readings.csv``, ``events.csv`` and ``run.json`` for one
-        run into a zip file."""
+        """Write one run's ``readings.csv``, ``events.csv`` and ``run.json`` to a zip file."""
         info = self._db.execute(
             "SELECT id, name, notes, started, ended, status, config, profile "
             "FROM runs WHERE id = ?",
@@ -368,9 +377,11 @@ class Store:
 
 
 class Recorder:
-    """Writes a run's readings and events as the controller publishes them.
+    """Write a run's readings and events as the controller publishes them.
+
     Subscribe it to the controller, which calls it on the controller's
-    thread, so it is the database's only writer while the run lasts."""
+    thread, so it is the database's only writer while the run lasts.
+    """
 
     def __init__(
         self,
