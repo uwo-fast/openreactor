@@ -1,5 +1,4 @@
-"""One controller at a time: a lock file held for as long as a controller owns
-the bus.
+"""Allow one controller at a time, with a lock file held while it owns the bus.
 
 The lock is machine-wide, not per user, because the bus is: a command run
 with sudo and one run by a lab user must refuse each other. It lives in
@@ -20,7 +19,7 @@ LOCK_PATH = Path("/run/lock/openreactor.lock")
 
 
 class LockHeld(Exception):
-    """Another controller holds the lock."""
+    """Raised when another controller holds the lock."""
 
     def __init__(self, path: Path, holder: str):
         super().__init__(f"{path} is held by {holder}")
@@ -48,7 +47,8 @@ class ControllerLock:
                 e.errno, f"cannot open the controller lock: {e.strerror}", str(self.path)
             ) from e
         # The umask may have narrowed the mode; widen it so other users can
-        # open the file. Only its creator can, which is enough.
+        # open the file. Only the file's creator may change it, and that is
+        # enough.
         with contextlib.suppress(PermissionError):
             os.fchmod(fd, 0o666)
         try:
