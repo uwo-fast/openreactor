@@ -331,6 +331,27 @@ def test_rejects_non_finite_periods(key: str, value: float):
     ]
 
 
+HUGE = 10**400  # parses from TOML, but too large for a float
+
+
+@pytest.mark.parametrize("key", ["slice_poll_s", "ezo_period_s"])
+def test_rejects_a_period_too_large_for_a_float(key: str):
+    assert problems(config(controller={key: HUGE})) == [
+        f"controller.{key}: must be a finite number"
+    ]
+
+
+def test_rejects_a_max_setpoint_too_large_for_a_float():
+    data = config()
+    data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "max_setpoint": HUGE}}
+    assert problems(data) == ["device[0].channels.jacket.max_setpoint: must be a finite number"]
+
+
+def test_rejects_a_gain_too_large_for_a_float():
+    data = tuned_heater({"kp": HUGE, "ki": 0.1, "kd": 0})
+    assert "device[0].channels.jacket.kp: must be between 0 and 25.5" in problems(data)
+
+
 def test_rejects_a_poll_too_slow_for_any_watchdog():
     assert problems(config(controller={"slice_poll_s": 30.0})) == [
         "controller.slice_poll_s: must be at most 21.845 s, so that 3 polls fit in "

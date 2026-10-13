@@ -54,6 +54,17 @@ def _hex(n: int) -> str:
     return f"0x{n:02X}" if n >= 0 else str(n)
 
 
+def _float(value: int | float) -> float:
+    """Return value as a float, or infinity for an integer too large for one.
+
+    TOML integers have no size limit, so float() can overflow.
+    """
+    try:
+        return float(value)
+    except OverflowError:
+        return math.inf
+
+
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
 # A Linux i2c-dev bus, e.g. /dev/i2c-1.
 I2C_BUS = re.compile(r"/dev/i2c-(\d+)")
@@ -196,13 +207,14 @@ class _Parser:
         if isinstance(value, bool) or not isinstance(value, int | float):
             self.error(path, "must be a number")
             return None
-        if not math.isfinite(value):
+        number = _float(value)
+        if not math.isfinite(number):
             self.error(path, "must be a finite number")
             return None
-        if not value > 0:
+        if not number > 0:
             self.error(path, "must be greater than 0")
             return None
-        return float(value)
+        return number
 
     def name(self, value: str, path: str) -> bool:
         if not _NAME.fullmatch(value):
@@ -478,7 +490,7 @@ class _Parser:
             if isinstance(value, bool) or not isinstance(value, int | float):
                 self.error(f"{path}.{g}", "must be a number")
                 return None
-            if not (math.isfinite(value) and 0 <= value <= GAIN_MAX):
+            if not (math.isfinite(_float(value)) and 0 <= value <= GAIN_MAX):
                 self.error(f"{path}.{g}", f"must be between 0 and {GAIN_MAX}")
                 return None
             if abs(value * 10 - round(value * 10)) > 1e-9:
