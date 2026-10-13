@@ -62,7 +62,16 @@ from bread_crumbs_contracts.rlht_ops import (
     rlht_send_set_tc_select,
     rlht_send_set_watchdog,
 )
-from crumbs_i2c import QUERY_DELAY_S, Bus, Controller, CrumbsError, LinuxBus, Message
+from crumbs_i2c import (
+    QUERY_DELAY_S,
+    SET_REPLY,
+    TYPE_ID_ANY,
+    Bus,
+    Controller,
+    CrumbsError,
+    LinuxBus,
+    Message,
+)
 
 from openreactor.config import ChannelConfig, DeviceConfig
 from openreactor.controller import Event
@@ -211,7 +220,7 @@ class CrumbsPort:
         self._crumbs.send(self.address, Message(self.type_id, opcode, payload))
 
     def stage(self, opcode: int) -> None:
-        self._crumbs.send(self.address, Message(0x00, 0xFE, bytes((opcode,))))
+        self._crumbs.send(self.address, Message(TYPE_ID_ANY, SET_REPLY, bytes((opcode,))))
 
     def read(self, opcode: int) -> bytes:
         reply = self._crumbs.read_expect(self.address, type_id=self.type_id, opcode=opcode)
@@ -275,10 +284,13 @@ class RlhtSlice:
         # sets them, and a re-assert sends them again after a watchdog trip.
         self.setpoints_deci = [0, 0]
 
-    # Start-up blocks, and runs before the controller starts ticking.
+    def _event(
+        self, kind: str, details: str = "", result: str = "ok", source: str = "system"
+    ) -> Event:
+        """Return a run-log event about this slice, stamped with the wall clock."""
+        return Event(self._wall(), source, kind, device=self.name, details=details, result=result)
 
-    def _query(self, opcode: int) -> bytes:
-        return self.port.query(opcode)
+    # Start-up blocks, and runs before the controller starts ticking.
 
     def start(self) -> list[Event]:
         """Check, make safe, arm and configure the slice.
@@ -294,7 +306,7 @@ class RlhtSlice:
         Raise SliceError if the slice cannot be used.
         """
         try:
-            version = bread_parse_version(self._query(BREAD_OP_GET_VERSION))
+            version = bread_parse_version(self.port.query(BREAD_OP_GET_VERSION))
         except CrumbsError as e:
             raise SliceError(f"no RLHT version reply: {e}") from e
         # It answered as an RLHT, so stop-all includes it from here on, even
@@ -317,14 +329,14 @@ class RlhtSlice:
                 f"{RLHT_MODULE_VER_MAJOR}.{RLHT_MODULE_VER_MINOR} or a later minor"
             )
         self._version = f"RLHT {module}, CRUMBS {_crumbs_version(version.crumbs_ver)}"
-        caps = bread_caps_parse_payload(self._query(BREAD_OP_GET_CAPS))
+        caps = bread_caps_parse_payload(self.port.query(BREAD_OP_GET_CAPS))
         self.caps = caps
 
         self.send_safe()
 
         if caps.flags & RLHT_CAP_CMD_WATCHDOG:
             self.port.send(BREAD_OP_SET_WATCHDOG, rlht_send_set_watchdog(self.watchdog_timeout_ms))
-            watchdog = bread_watchdog_parse_payload(self._query(BREAD_OP_GET_WATCHDOG))
+            watchdog = bread_watchdog_parse_payload(self.port.query(BREAD_OP_GET_WATCHDOG))
             self._last_watchdog = watchdog
             self._trip_count = watchdog.trip_count
             if not watchdog.armed or watchdog.timeout_ms != self.watchdog_timeout_ms:
@@ -336,7 +348,7 @@ class RlhtSlice:
         else:
             self.read_only = not self.device.allow_unprotected
 
-        self._last_state = rlht_parse_state_payload(self._query(RLHT_OP_GET_STATE))
+        self._last_state = rlht_parse_state_payload(self.port.query(RLHT_OP_GET_STATE))
         if not self.read_only:
             self._configure(self._last_state)
 
@@ -350,15 +362,8 @@ class RlhtSlice:
             else "no watchdog: allow_unprotected"
         )
         return [
-            Event(
-                self._wall(),
-                "system",
-                "slice-start",
-                device=self.name,
-                details=(
-                    f"RLHT {module}, CRUMBS {_crumbs_version(version.crumbs_ver)}, "
-                    f"caps 0x{caps.flags:08X}; {protection}"
-                ),
+            self._event(
+                "slice-start", details=f"{self._version}, caps 0x{caps.flags:08X}; {protection}"
             )
         ]
 
@@ -567,11 +572,8 @@ class RlhtSlice:
             # Drop any pending confirm; the next check that answers is fresh.
             self._confirming = False
             return [
-                Event(
-                    self._wall(),
-                    "system",
+                self._event(
                     "slice-unchecked",
-                    device=self.name,
                     details=(
                         f"{UNREACHABLE_AFTER} watchdog checks failed in a row: "
                         f"{_describe(e)}; trips and reboots go unseen until one answers"
@@ -587,11 +589,8 @@ class RlhtSlice:
         if self._failed_polls == UNREACHABLE_AFTER and not self.unreachable:
             self.unreachable = True
             out.append(
-                Event(
-                    self._wall(),
-                    "system",
+                self._event(
                     "slice-unreachable",
-                    device=self.name,
                     details=f"{UNREACHABLE_AFTER} polls failed: {_describe(e)}",
                     result="error",
                 )
@@ -607,7 +606,7 @@ class RlhtSlice:
         # fresh check, whatever was pending before.
         self._check_owed = self.protected
         self._confirming = False
-        return [Event(self._wall(), "system", "slice-reachable", device=self.name)]
+        return [self._event("slice-reachable")]
 
     def _estop(self, state: RlhtStateResult) -> list[Result | Event]:
         held = bool(state.flags & RLHT_FLAG_ESTOP)
@@ -617,13 +616,8 @@ class RlhtSlice:
             # setpoint again; the stop-all this event triggers clears them too.
             self.setpoints_deci = [0, 0]
             return [
-                Event(
-                    self._wall(),
-                    "slice",
-                    "e-stop",
-                    device=self.name,
-                    details="e-stop pressed on the slice",
-                    result="held",
+                self._event(
+                    "e-stop", details="e-stop pressed on the slice", result="held", source="slice"
                 )
             ]
         if held:
@@ -632,13 +626,11 @@ class RlhtSlice:
         if self.estop:
             self.estop = False
             return [
-                Event(
-                    self._wall(),
-                    "slice",
+                self._event(
                     "e-stop",
-                    device=self.name,
                     details="e-stop released; setpoints stay at 0 until set again",
                     result="released",
+                    source="slice",
                 )
             ]
         return []
@@ -690,11 +682,8 @@ class RlhtSlice:
             return []  # retried each poll, reported once per result
         self._drop_result = result
         return [
-            Event(
-                self._wall(),
-                "system",
+            self._event(
                 "slice-setpoints-changed",
-                device=self.name,
                 details=(
                     f"the slice ran {ran}, not {wanted}, with no trip or reboot to explain "
                     "it; setpoints stay at 0 until set again"
@@ -746,16 +735,7 @@ class RlhtSlice:
         if confirming:
             # The last re-assert did not take. Say so, and wait for the next
             # scheduled check rather than re-asserting at once.
-            return [
-                Event(
-                    self._wall(),
-                    "system",
-                    what,
-                    device=self.name,
-                    details=details,
-                    result="error: the re-assert did not take",
-                )
-            ]
+            return [self._event(what, details=details, result="error: the re-assert did not take")]
         try:
             self._reassert()
         except (CrumbsError, OSError, ValueError) as e:
@@ -764,23 +744,10 @@ class RlhtSlice:
             self._trip_count = baseline
             self._check_owed = True
             failure = f"error: re-assert failed: {_describe(e)}"
-            return [
-                Event(
-                    self._wall(), "system", what, device=self.name, details=details, result=failure
-                )
-            ]
+            return [self._event(what, details=details, result=failure)]
         self._confirming = True
         self._check_owed = True
-        return [
-            Event(
-                self._wall(),
-                "system",
-                what,
-                device=self.name,
-                details=details,
-                result="re-asserted",
-            )
-        ]
+        return [self._event(what, details=details, result="re-asserted")]
 
     def _reassert(self) -> None:
         """Send the desired state again, then re-arm the watchdog.

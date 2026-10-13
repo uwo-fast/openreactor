@@ -731,7 +731,7 @@ def test_an_e_stop_sends_stop_all_and_nothing_resumes():
     rlht.commands.clear()
     tick(c, clock, 3.0)
     [held] = events(seen, "e-stop")
-    assert held.result == "held"
+    assert (held.source, held.device, held.result) == ("slice", "heater", "held")
     # Stop-all reached every actuator, and the safe state goes every poll.
     assert log == ["safe fan"]
     assert ops(rlht).count(SET_SETPOINTS) >= 2
@@ -740,7 +740,7 @@ def test_an_e_stop_sends_stop_all_and_nothing_resumes():
     rlht.commands.clear()
     tick(c, clock, 2.0)
     released = events(seen, "e-stop")[-1]
-    assert released.result == "released"
+    assert (released.source, released.device, released.result) == ("slice", "heater", "released")
     # Nothing was sent to restart heating.
     assert all(
         payload == struct.pack("<hh", 0, 0) for op, payload in rlht.commands if op == SET_SETPOINTS

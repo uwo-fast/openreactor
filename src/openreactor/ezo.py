@@ -253,10 +253,6 @@ class EzoReader:
             self._pending[ch.name] = _Pending(now + wait_s, wait_s, temperature)
         return failed
 
-    def next_due(self) -> float | None:
-        dues = [p.due for p in self._pending.values() if not p.waiting_for_cycle]
-        return min(dues) if dues else None
-
     def _forget_temperature(self, ch: EzoChannel) -> None:
         if ch.family.name == "rtd":
             self._temperatures.pop(ch.name, None)
@@ -308,16 +304,7 @@ class EzoReader:
 # Multi-step commands are generators: each yields how long to wait, in
 # seconds, before it may continue, and returns its result. The CLI and the
 # service hand them to the controller, which resumes them on later ticks.
-# run_steps drives one to the end with sleep instead.
 Steps = Generator[float, None, _T]
-
-
-def run_steps(steps: Steps[_T], sleep: Callable[[float], None] = time.sleep) -> _T:
-    try:
-        while True:
-            sleep(next(steps))
-    except StopIteration as done:
-        return done.value
 
 
 def command_steps(port: EzoPort, send: Callable[[], int]) -> Steps[None]:
@@ -363,24 +350,6 @@ def calibrate_steps(family: Family, port: EzoPort, point: str, value: float | No
 
 def clear_calibration_steps(port: EzoPort) -> Steps[None]:
     yield from command_steps(port, port.send_calibration_clear)
-
-
-def calibration_status(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> str:
-    return run_steps(calibration_status_steps(port), sleep)
-
-
-def calibrate(
-    family: Family,
-    port: EzoPort,
-    point: str,
-    value: float | None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
-    run_steps(calibrate_steps(family, port, point, value), sleep)
-
-
-def clear_calibration(port: EzoPort, sleep: Callable[[float], None] = time.sleep) -> None:
-    run_steps(clear_calibration_steps(port), sleep)
 
 
 # ezo-driver translation, kept as plain functions so the tests can check them
