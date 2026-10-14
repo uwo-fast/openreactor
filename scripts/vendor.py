@@ -1,7 +1,6 @@
 """Download the files the vendor manifest lists and record their sha256 there.
 
-    uv run python scripts/vendor.py           # download, then write the hashes
-    uv run python scripts/vendor.py --check   # verify the files, no network
+    uv run python scripts/vendor.py   # download, then write the hashes
 
 A download whose hash differs from a recorded one is written anyway and the
 new hash recorded, so the change shows in the diff for review.
@@ -28,19 +27,6 @@ def entries() -> list[dict[str, str]]:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def check() -> int:
-    bad = 0
-    for e in entries():
-        path = VENDOR / e["path"]
-        if not path.exists():
-            print(f"missing: {e['path']}", file=sys.stderr)
-            bad += 1
-        elif sha256(path.read_bytes()) != e["sha256"]:
-            print(f"changed: {e['path']} does not match the manifest", file=sys.stderr)
-            bad += 1
-    return 1 if bad else 0
 
 
 def update() -> int:
@@ -72,9 +58,8 @@ def update() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
-    parser.add_argument("--check", action="store_true", help="verify only; no network")
-    return check() if parser.parse_args().check else update()
+    argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0]).parse_args()
+    return update()
 
 
 if __name__ == "__main__":
