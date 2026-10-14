@@ -509,20 +509,23 @@ def test_rlht_gains_and_period_are_checked(channel: dict[str, Any], problem: str
     assert problem in problems(data)
 
 
-GAINS_ON_BOTH = (
-    "device[0].channels: gains (kp, ki, kd) must be set on a channel for each of the slice's "
-    "two outputs, or on none: the slice sets both outputs' gains at once"
+GAINS_ON_EVERY_CHANNEL = (
+    "device[0].channels: gains (kp, ki, kd) must be set on every channel or on none: the "
+    "slice sets both outputs' gains at once, and an output with no channel gets the other "
+    "output's gains"
 )
 
 
-def test_gains_on_one_output_are_refused():
+def test_gains_on_the_only_channel_are_accepted():
+    # A gen1 RLHT has one relay, so its config has one channel.
     data = config()
     data["device"][0]["channels"] = {"jacket": {"output": 1, "tc": 1, "kp": 1, "ki": 1, "kd": 1}}
-    assert problems(data) == [GAINS_ON_BOTH]
+    [heater] = [d for d in parse_config(data).devices if d.kind == "rlht"]
+    assert (heater.channels[0].kp, heater.channels[0].ki, heater.channels[0].kd) == (1, 1, 1)
 
 
 def test_gains_on_one_of_two_channels_are_refused():
-    assert problems(tuned_heater({"kp": 1, "ki": 1, "kd": 1}, lid={})) == [GAINS_ON_BOTH]
+    assert problems(tuned_heater({"kp": 1, "ki": 1, "kd": 1}, lid={})) == [GAINS_ON_EVERY_CHANNEL]
 
 
 def test_a_slice_poll_shorter_than_two_ticks_is_refused():
