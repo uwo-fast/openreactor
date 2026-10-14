@@ -379,6 +379,24 @@ def test_a_profile_on_an_unreachable_slice_is_refused(open_bench):
     bench.dcmt.faults = []
 
 
+@pytest.mark.parametrize("hold", ["e-stop", "trip"])
+def test_a_profile_is_refused_while_a_slice_is_held(open_bench, hold):
+    """Started now, it would run as soon as the e-stop or the trip cleared."""
+    bench, client = open_bench
+    if hold == "e-stop":
+        bench.rlht.flags = 0x01
+        until(lambda: client.get("/api/v1/status").json()["slices"][0]["estop"])
+    else:
+        bench.dcmt.trip()
+        until(lambda: held(client))
+    r = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+    assert r.status_code == 409
+    assert ("e-stop on heater is held" if hold == "e-stop" else "clear it first") in r.json()[
+        "detail"
+    ]
+    assert client.get("/api/v1/runs").json() == []
+
+
 def test_a_shutdown_during_a_profile_ends_its_run_interrupted(tmp_path: Path):
     bench = Bench(tmp_path, password=False)
     with TestClient(bench.app, base_url=LOCAL) as client:

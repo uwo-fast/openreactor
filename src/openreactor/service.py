@@ -518,6 +518,11 @@ class Service:
                 raise Unreachable(f"{n}: {d.name} is not in use")
             if s.unreachable:
                 raise Unreachable(f"{n}: {d.name} is unreachable")
+            # Started now, it would wait, and run as soon as these cleared.
+            if s.estop:
+                raise Conflict(f"{n}: the e-stop on {d.name} is held")
+            if isinstance(s, DcmtSlice) and s.held:
+                raise Conflict(f"{n}: a watchdog trip is held on {d.name}; clear it first")
             channels[n] = (d, ch, s)
 
         def start() -> int:
