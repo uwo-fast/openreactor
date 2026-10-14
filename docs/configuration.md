@@ -160,5 +160,11 @@ address = 0x63
 temp_comp = "vessel_temp"
 ```
 
+Only an `ezo-rtd` device can be a compensation source. A thermocouple on an
+RLHT slice cannot, so a rig without an RTD reads pH, EC and DO at the
+temperature stored on each circuit.
+[#55](https://github.com/uwo-fast/openreactor/issues/55) tracks
+compensation from a thermocouple.
+
 The factory default addresses are in
 [install.md](install.md#2-put-the-ezo-circuits-in-i2c-mode).
