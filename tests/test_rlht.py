@@ -28,8 +28,8 @@ from openreactor.rlht import (
     SendFailed,
     SliceBusy,
     SliceError,
-    opened_slices,
 )
+from openreactor.slices import opened_slices
 
 JACKET = ChannelConfig(name="jacket", label="Jacket", output=1, tc=1)
 

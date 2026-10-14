@@ -16,6 +16,7 @@ from fakes import (
     SET_WATCHDOG,
     FakeActuator,
     FakeClock,
+    FakeDcmt,
     FakeI2cBus,
     FakePort,
     FakeRlht,
@@ -514,6 +515,37 @@ def test_run_starts_the_slice_and_makes_it_safe_on_the_way_out(
     assert sent[:3] == [SET_SETPOINTS, SET_OPEN_DUTY, SET_WATCHDOG]
     assert sent[-2:] == [SET_SETPOINTS, SET_OPEN_DUTY]
     assert heater.armed == 1
+
+
+def test_run_records_a_dcmt_and_releases_it_on_the_way_out(
+    tmp_path: Path, ports, heater: FakeRlht, database: Path, monkeypatch, capsys
+):
+    path = tmp_path / "motors.toml"
+    path.write_text(
+        CONFIG
+        + """
+[[device]]
+name = "motors"
+kind = "dcmt"
+bus = "/dev/i2c-1"
+address = 0x14
+channels.stirrer = { motor = 1 }
+"""
+    )
+    dcmt = FakeDcmt()
+    monkeypatch.setattr(cli, "open_bus", lambda p: FakeI2cBus({0x0A: heater, 0x14: dcmt}))
+    stop_after(3.0, monkeypatch)
+    assert cli.main(["run", "-c", str(path), "--name", "stir"]) == 0
+    assert "not supported" not in capsys.readouterr().err
+    # Started safe and armed, then stop-all, then released: disarmed last.
+    assert dcmt.commands[3] == (SET_WATCHDOG, b"\x88\x13")
+    assert dcmt.commands[-1] == (SET_WATCHDOG, b"\x00\x00")
+    assert (dcmt.armed, dcmt.brakes, dcmt.pwm) == (0, [1, 1], [0, 0])
+    assert dcmt.state_replies >= 2
+    out = tmp_path / "run.zip"
+    assert cli.main(["export", "-c", str(path), "1", "-o", str(out)]) == 0
+    with zipfile.ZipFile(out) as z:
+        assert ",stirrer.duty,0.0,%" in z.read("readings.csv").decode()
 
 
 def test_a_slice_that_failed_start_up_is_not_polled_but_gets_stop_all(

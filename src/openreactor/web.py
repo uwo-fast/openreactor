@@ -43,6 +43,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from openreactor import ui
 from openreactor.auth import verify_password
 from openreactor.config import Config
+from openreactor.dcmt import DcmtStatus
 from openreactor.errors import ERRORS, error_detail
 from openreactor.rlht import SliceStatus
 
@@ -189,6 +190,8 @@ class StatusOut(BaseModel):
     devices: list[DeviceOut]
     # Each RLHT slice's firmware, mode, e-stop, watchdog and outputs.
     slices: list[SliceStatus]
+    # Each DCMT slice's firmware, mode, e-stop, watchdog and motors.
+    dcmt_slices: list[DcmtStatus]
 
 
 class ChannelOut(BaseModel):
@@ -232,6 +235,7 @@ def get_status(svc: Svc) -> StatusOut:
         recording_failed=svc.recording_failed(),
         devices=devices,
         slices=svc.slices(),
+        dcmt_slices=svc.dcmt_slices(),
     )
 
 
@@ -248,6 +252,11 @@ def put_setpoint(channel: str, body: Setpoint, svc: Svc) -> None:
 @api.post("/stop-all")
 def post_stop_all(svc: Svc) -> list[EventOut]:
     return [EventOut(**asdict(e)) for e in svc.stop_all()]
+
+
+@api.post("/devices/{device}/clear-trip")
+def post_clear_trip(device: str, svc: Svc) -> list[EventOut]:
+    return [EventOut(**asdict(e)) for e in svc.clear_trip(device)]
 
 
 @api.get("/runs")

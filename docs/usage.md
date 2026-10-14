@@ -18,16 +18,15 @@ command as `uv run openreactor ...`. The browser UI and the HTTP API are in
 | `openreactor ezo cal DEVICE POINT [VALUE]` | Calibrate one point. |
 | `openreactor ezo cal DEVICE clear --yes` | Erase a circuit's calibration. |
 | `openreactor serve [--host H] [--port P]` | Serve the browser UI and the HTTP API until Ctrl-C. |
-| `openreactor status [--url URL]` | Show each RLHT slice's state, from the running server. |
+| `openreactor status [--url URL]` | Show each slice's state, from the running server. |
 | `openreactor hash-password` | Make a `server.password_hash`. |
 | `openreactor profile validate [-c CONFIG] [--dry-run] FILE` | Check a run profile, and optionally print its timeline. |
 
 Commands that use a configuration read `/etc/openreactor/openreactor.toml`
 unless you pass `-c FILE`.
 
-`run` and `serve` start each RLHT slice in the configuration. `read` and
-`ezo cal` never touch a slice. No command drives a DCMT slice yet; `run`
-skips them with a note, and `serve` shows them as not supported.
+`run` and `serve` start each RLHT and DCMT slice in the configuration.
+`read` and `ezo cal` never touch a slice.
 
 ## One controller at a time
 

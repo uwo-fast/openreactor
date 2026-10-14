@@ -22,9 +22,9 @@ If any slice fails to go safe, the page names it.
 | Page | Path | What it shows |
 |---|---|---|
 | Dashboard | `/` | Live values, a chart of the values since the page opened, each device's status, and the current run. |
-| Controls | `/controls` | A setpoint form for each RLHT channel. |
+| Controls | `/controls` | A setpoint form for each RLHT channel, and a duty form for each DCMT motor. |
 | Runs | `/runs` | Start and stop a run, and export the recorded runs. |
-| Devices | `/devices` | Each device's status, and EZO calibration. |
+| Devices | `/devices` | Each device's status, EZO calibration, and Clear trip for a DCMT whose watchdog trip is held. |
 | About | `/about` | The version, the licence, and the included browser libraries. |
 
 The UI loads nothing from the internet, so it works on a lab network with no
@@ -38,9 +38,10 @@ sign-in as the UI. The OpenAPI description is at `/api/v1/openapi.json`.
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/status` | The version, the current run, each device's status, and each RLHT slice in detail under `slices`. |
+| `GET` | `/status` | The version, the current run, each device's status, each RLHT slice in detail under `slices`, and each DCMT under `dcmt_slices`. |
 | `GET` | `/channels` | The latest value of every channel. |
-| `PUT` | `/channels/{channel}/setpoint` | Set an RLHT channel's setpoint. The body is `{"value": 40}`. |
+| `PUT` | `/channels/{channel}/setpoint` | Set an RLHT channel's setpoint in °C, or a DCMT motor's duty in %. The body is `{"value": 40}`. |
+| `POST` | `/devices/{device}/clear-trip` | Clear a DCMT's held watchdog trip. Its motors stay stopped. Answers with the event. |
 | `POST` | `/stop-all` | Send stop-all, and return one event per slice. |
 | `GET` | `/runs` | List the recorded runs. |
 | `POST` | `/runs` | Start a run. The body is `{"name": "...", "notes": "..."}`; `notes` is optional. Answers 201 with the run's `id`. |
@@ -83,17 +84,31 @@ A setpoint stays the one openreactor wants until one of these happens:
 After a plain watchdog trip, openreactor sends the setpoint again.
 [safety.md](safety.md) describes each case.
 
+## Motor duties
+
+A DCMT motor's setpoint is its duty, from -100 to 100 %: negative runs it in
+reverse, and 0 brakes it. The slice works in PWM steps of 1/255, so
+openreactor rounds the duty to the nearest step (50 % runs as 50.2 %).
+
+Before it sends a duty, openreactor reads the slice. The slice takes both
+motors' duties in one command, so if the slice rebooted or its e-stop was
+pressed since the last poll, sending would restart the other motor at its
+old duty. In that case openreactor refuses with 409, checks the slice at its
+next poll, and stops both motors. Unlike an RLHT setpoint, a duty is never
+sent again: after an e-stop, a watchdog trip, a reboot or stop-all, the
+motors stay stopped until you set them again.
+
 A `PUT` to `/channels/{channel}/setpoint` answers with one of these:
 
 | Status | When |
 |---|---|
 | 204 | The setpoint was sent. |
 | 404 | No actuated channel has that name. |
-| 409 | The channel is on a DCMT slice, which openreactor does not drive yet. |
 | 409 | The slice's e-stop is held. Release it, then set the setpoint again. |
 | 409 | The slice is read-only, because it has no command watchdog. |
 | 409 | The slice is running setpoints other than those wanted, and openreactor is checking why. Try again a moment later. |
-| 422 | The value is not a JSON number, is below 0, or is above the limit. |
+| 409 | On a DCMT: a watchdog trip is held, or the slice changed since it was last checked. |
+| 422 | The value is not a JSON number, is below 0, or is above the limit. For a motor, it is outside -100 to 100. |
 | 502 | Sending failed. The slice may still have applied it, so the next polls compare what it runs with what is wanted. |
 | 503 | The slice is unreachable, did not finish start-up, or is not in use. |
 | 504 | The controller did not start the action within 30 seconds, or started it and did not finish within 30 more. |

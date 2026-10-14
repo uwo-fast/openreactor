@@ -1,12 +1,13 @@
 # Safety
 
-openreactor drives heaters. A heater with a setpoint above 0 heats until the
-setpoint goes to 0, stop-all is sent, the slice's e-stop is pressed, or the
-slice's command watchdog trips. Read this page before you connect a heater
-to an RLHT slice.
+openreactor drives heaters and motors. A heater with a setpoint above 0
+heats until the setpoint goes to 0, stop-all is sent, the slice's e-stop is
+pressed, or the slice's command watchdog trips. Read this page before you
+connect a heater to an RLHT slice or a motor to a DCMT slice.
 
 This page describes what openreactor does to keep RLHT heater slices safe,
 and what happens to the setpoints after each kind of fault.
+[DCMT motor slices](#dcmt-motor-slices) are covered at the end.
 
 ## Firmware
 
@@ -115,6 +116,38 @@ two polls, a setpoint that reached the slice although sending it failed, and
 another controller on the bus. In each, nothing resumes until you set a
 setpoint again. While openreactor checks the watchdog, it refuses new
 setpoints for that slice with 409.
+
+## DCMT motor slices
+
+openreactor drives each DCMT motor open loop. The rules differ from the
+RLHT's in one way: a motor never resumes on its own.
+
+- **Start-up** checks the version and that the slice offers open loop and
+  brakes, then sends the safe state: both brakes on, open-loop mode, PWM 0,
+  in that order, each even if one before it fails. The brakes go first
+  because a slice left in closed-loop position keeps driving until braked.
+  Then the watchdog is armed, as for an RLHT.
+- **Stop-all** sends the same safe state.
+- **Setting a duty** reads the slice first, and refuses with 409 unless its
+  watchdog, e-stop, PWM, brakes and mode are as openreactor left them. The
+  slice takes both motors' PWM in one command, so this keeps a duty for one
+  motor from restarting the other after a reboot or e-stop no poll has seen.
+- **E-stop, trip, reboot, a watchdog timeout changed on the slice, or a
+  PWM, brake or mode openreactor did not send:** both motors stay stopped
+  until you set a duty again. openreactor sends the safe state, arms the
+  watchdog again, and logs the event.
+- **A trip that latches.** Slice_DCMT firmware with
+  `DCMT_CAP_CLEAR_WATCHDOG_TRIP` holds its motors braked after a trip until
+  the trip is cleared. openreactor logs `slice-trip` `held` and refuses
+  duties. It never clears the trip itself: use Clear trip on the Devices
+  page or `POST /api/v1/devices/{device}/clear-trip`. The motors stay
+  stopped after the clear. A trip already held when openreactor starts is
+  left held the same way.
+- **A clean shutdown** sends the safe state, then disarms the watchdog, so
+  a latching slice is not left to trip once nothing polls it. If the safe
+  state fails, the watchdog stays armed and trips. If openreactor is
+  killed, the watchdog trips, and the trip is held at the next start until
+  you clear it.
 
 ## Known limitations
 

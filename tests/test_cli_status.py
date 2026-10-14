@@ -85,6 +85,11 @@ def test_with_a_server_running_it_shows_what_the_server_sees(
     assert "e-stop    clear" in out and "mode      closed loop" in out
     assert "jacket      25.1 °C  setpoint    0.0  duty   0 %  tc 1  (wanted 37.0)" in out
     assert "output 2    no reading" in out
+    assert "motors  0x14  DCMT 1.0.0, CRUMBS 0.12.5" in out
+    assert "mode      open loop" in out
+    assert "stirrer   duty    0.0 %  braked" in out
+    assert "motor 2   duty    0.0 %  braked" in out
+    assert "motors     dcmt" not in out  # shown in full above, not again
     assert "air        ezo-hum  ok" in out
     assert out.rstrip().endswith("(from the server at http://127.0.0.1:8123/api/v1/status)")
 
@@ -250,3 +255,35 @@ def test_a_tripped_e_stopped_or_unprotected_slice_says_so(
     assert "duty   0 %" in out  # a period of 0 is no duty, not a division by zero
     assert "state     read-only: the slice has no command watchdog" in out
     assert "watchdog  none: the slice has no command watchdog" in out
+
+
+def test_a_held_dcmt_shows_its_state_and_the_duty_it_wanted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    tripped = {"armed": True, "timeout_ms": 5000, "tripped": True, "trip_count": 1}
+    status = {
+        "slices": [],
+        "dcmt_slices": [
+            {"name": "motors", "address": 20,
+             "state": "watchdog trip held: clear it to drive the motors",
+             "version": "DCMT 1.0.0, CRUMBS 0.12.5", "caps": 119, "mode": "open loop",
+             "estop": False, "watchdog": tripped, "desired_pct": [40.0, 0.0],
+             "motors": [{"motor": 1, "channel": "stirrer", "duty_pct": 0.0, "brake": True}]},
+        ],
+        "devices": [{"name": "motors", "kind": "dcmt", "status": "held"}],
+    }  # fmt: skip
+    monkeypatch.setattr(cli, "fetch_status", lambda url, pw: status)
+    assert cli.main(["status", "-c", write_config(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "state     watchdog trip held: clear it to drive the motors" in out
+    assert "watchdog  armed 5000 ms, trips 1, TRIPPED" in out
+    assert "stirrer   duty    0.0 %  braked  (wanted 40.0)" in out
+
+
+def test_an_older_server_without_dcmt_detail_lists_the_dcmt_as_a_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    status = {"slices": [], "devices": [{"name": "motors", "kind": "dcmt", "status": "ok"}]}
+    monkeypatch.setattr(cli, "fetch_status", lambda url, pw: status)
+    assert cli.main(["status", "-c", write_config(tmp_path)]) == 0
+    assert "motors     dcmt     ok" in capsys.readouterr().out
