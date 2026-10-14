@@ -462,8 +462,14 @@ class RlhtSlice:
     def set_setpoint(self, output: int, deci: int) -> None:
         """Send an operator's setpoint for one output, in tenths of a degree.
 
-        Call it on the controller's thread. The desired setpoints, which a
-        re-assert sends again, change only once the send succeeds.
+        Call it on the controller's thread. SET_SETPOINTS carries both
+        outputs' setpoints, so the other output's is sent again too. First,
+        the slice is read to confirm it still runs what openreactor last
+        sent, with its watchdog armed: after a reboot that no poll has seen
+        yet, such as a power-cut e-stop just released, sending the other
+        output's old setpoint would restart that heater with the watchdog
+        disarmed. The desired setpoints, which a re-assert sends again,
+        change only once the send succeeds.
         """
         if not self.started:
             raise SliceError(f"{self.name} did not finish start-up")
@@ -483,6 +489,7 @@ class RlhtSlice:
                 f"{self.name} runs other setpoints than wanted, and is being checked; "
                 "set it again in a moment"
             )
+        self._confirm_unchanged()
         wanted = list(self.setpoints_deci)
         wanted[output - 1] = deci
         try:
@@ -490,6 +497,44 @@ class RlhtSlice:
         except (CrumbsError, OSError) as e:
             raise SendFailed(f"{self.name}: {_describe(e)}") from e
         self.setpoints_deci = wanted
+
+    def _confirm_unchanged(self) -> None:
+        """Read the slice now, and raise unless it is as openreactor left it.
+
+        Its watchdog must have the controller's timeout (0 means disarmed,
+        as after a reboot), not be tripped and have the trip count last
+        seen, and its state must show no e-stop and the setpoints
+        openreactor last sent. Otherwise a check is owed, which the next
+        poll runs, and the caller waits for it.
+        """
+        # Each query stages its own reply over the one the poll staged. The
+        # slice builds a reply when it is read, so ending with the query the
+        # poll staged leaves it reading a fresh reply of the kind it expects,
+        # however often setpoints are sent.
+        watchdog_last = self._staged and self._phase == "watchdog"
+        watchdog: BreadWatchdogResult | None = None
+        try:
+            if self.protected and not watchdog_last:
+                watchdog = bread_watchdog_parse_payload(self.port.query(BREAD_OP_GET_WATCHDOG))
+            state = rlht_parse_state_payload(self.port.query(RLHT_OP_GET_STATE))
+            if watchdog_last:
+                watchdog = bread_watchdog_parse_payload(self.port.query(BREAD_OP_GET_WATCHDOG))
+        except (CrumbsError, OSError, ValueError) as e:
+            self._staged = False  # what the slice has staged is unknown: stage again
+            raise SliceError(f"{self.name}: could not read the slice: {_describe(e)}") from e
+        changed = bool(state.flags & RLHT_FLAG_ESTOP) or self._drift(state)
+        if watchdog is not None:
+            changed = changed or (
+                watchdog.timeout_ms != self.watchdog_timeout_ms
+                or watchdog.tripped
+                or watchdog.trip_count != self._trip_count
+            )
+        if changed:
+            self._check_owed = self.protected
+            raise SliceBusy(
+                f"{self.name} changed since it was last checked, and is being checked; "
+                "set the setpoint again in a moment"
+            )
 
     # The poll runs on every controller tick and never waits: it stages a
     # query (SET_REPLY) on one tick and reads it on a later one. Each poll
@@ -713,6 +758,16 @@ class RlhtSlice:
         if not watchdog.armed:
             what = "slice-reboot"
             details = f"watchdog disarmed (trips {watchdog.trip_count})"
+            rebooted = True
+        elif watchdog.timeout_ms != self.watchdog_timeout_ms:
+            # Most likely a build that arms at boot, rebooted with its own
+            # timeout; otherwise someone changed it at the slice. Either
+            # way, treat it as a reboot.
+            what = "slice-reboot"
+            details = (
+                f"watchdog timeout {watchdog.timeout_ms} ms, not {self.watchdog_timeout_ms} ms "
+                f"(trips {watchdog.trip_count})"
+            )
             rebooted = True
         elif watchdog.tripped or watchdog.trip_count != baseline:
             # A count below the baseline with the watchdog armed is the u8

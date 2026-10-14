@@ -79,6 +79,11 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   or it is unreachable. Each one is recorded as an event.
 - A slice found running other setpoints than wanted, with no trip or reboot
   behind it, is sent its safe state.
+- Before a setpoint is sent, the slice is read, and the setpoint refused
+  unless the slice is as openreactor left it. Setting one output no longer
+  restarts the other after a reboot no poll has seen yet.
+- A watchdog timeout other than `watchdog_timeout_ms` is treated as a
+  reboot.
 - `openreactor serve` prints each event as it happens, as `run` does.
 - `openreactor status`, which shows each RLHT slice's firmware, state,
   watchdog, e-stop, mode and outputs from the running server. With no

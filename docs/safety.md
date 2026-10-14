@@ -81,6 +81,7 @@ print it as it happens.
 | Watchdog trip: the slice stopped hearing from openreactor, for example while its I2C was disconnected. | Logs `slice-trip`, and sends the configuration again with the wanted setpoints. | Restored. |
 | Reboot: the slice lost power and restarted, so its watchdog is disarmed. | Logs `slice-reboot`, and sends the configuration again with setpoints of 0. | 0 until you set them again. |
 | The watchdog's trip count went down. This is how a reboot shows on a build that arms its watchdog at boot. | Treats it as a reboot, and logs `slice-trip`. | 0 until you set them again. |
+| The watchdog's timeout is not `watchdog_timeout_ms`. This is how a reboot shows on a build that arms at boot with a different timeout, or someone changed it at the slice. | Treats it as a reboot, and logs `slice-reboot`. | 0 until you set them again. |
 | E-stop pressed, on the slice's e-stop pin. | Logs `e-stop` `held`, and sends stop-all to every slice. While the e-stop is held, it sends the slice its safe state at each poll and refuses setpoints. | 0 on every slice until you set them again. |
 | E-stop released. | Logs `e-stop` `released`. | Still 0 until you set them again. |
 | E-stop that cuts the slice's power. | The slice reboots, so this is the reboot case. | 0 until you set them again. |
@@ -106,8 +107,23 @@ the gains, and then the watchdog armed again. It never sends a setpoint above
 
 At the next watchdog read, openreactor checks that the state took. If it did
 not, it logs the event with the result `error: the re-assert did not take`,
-and tries again at the next scheduled watchdog read. If sending failed, it
-tries again after the next poll.
+and tries again at the next scheduled watchdog read, or at the next poll if
+a setpoint was refused meanwhile. If sending failed, it tries again after the
+next poll.
+
+### Before a setpoint is sent
+
+The slice takes both outputs' setpoints in one command, so setting one
+output sends the other's again. If the slice rebooted since the last poll,
+for example because a power-cut e-stop was just released, that would restart
+the other output's heater with the watchdog disarmed. So before it sends a
+setpoint, openreactor reads the slice's watchdog and state. Unless the
+watchdog has the configured timeout and no new trip, the e-stop is clear,
+and the setpoints are the ones it last sent, it refuses with 409 and checks
+the slice's watchdog at its next poll. A slice with no watchdog
+(`allow_unprotected`) has no watchdog to check: if its setpoints changed,
+the next poll sends it the safe state. If the slice cannot be read,
+openreactor refuses with 503.
 
 ### Setpoints that changed without a trip or reboot
 
@@ -156,7 +172,8 @@ RLHT's in one way: a motor never resumes on its own.
 ## Known limitations
 
 - A slice built with `RLHT_WATCHDOG_BOOT_MS` arms its watchdog at boot. Its
-  reboot shows as a trip only if the slice had tripped before. Otherwise,
+  reboot shows as a trip only if the slice had tripped before, or as a
+  reboot if its boot timeout differs from `watchdog_timeout_ms`. Otherwise,
   if a setpoint was above 0, openreactor sees only that the setpoints
   changed and sends the safe state; if the setpoints were 0, it sees
   nothing. Either way the slice keeps the mode, thermocouples, periods,

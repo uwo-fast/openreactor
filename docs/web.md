@@ -107,11 +107,11 @@ A `PUT` to `/channels/{channel}/setpoint` answers with one of these:
 | 404 | No actuated channel has that name. |
 | 409 | The slice's e-stop is held. Release it, then set the setpoint again. |
 | 409 | The slice is read-only, because it has no command watchdog. |
-| 409 | The slice is running setpoints other than those wanted, and openreactor is checking why. Try again a moment later. |
-| 409 | On a DCMT: a watchdog trip is held, or the slice changed since it was last checked. |
+| 409 | The slice is running setpoints other than those wanted, or changed since it was last checked (a reboot, a trip or an e-stop no poll has seen yet), and openreactor is checking why. Try again a moment later. |
+| 409 | On a DCMT: a watchdog trip is held. |
 | 422 | The value is not a JSON number, is below 0, or is above the limit. For a motor, it is outside -100 to 100. |
 | 502 | Sending failed. The slice may still have applied it, so the next polls compare what it runs with what is wanted. |
-| 503 | The slice is unreachable, did not finish start-up, or is not in use. |
+| 503 | The slice is unreachable, could not be read just before the send, did not finish start-up, or is not in use. |
 | 504 | The controller did not start the action within 30 seconds, or started it and did not finish within 30 more. |
 
 Any endpoint can also answer 401 when you are not signed in, 403 when the
