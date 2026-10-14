@@ -39,11 +39,11 @@ wheels = [
 
 [[package]]
 name = "bread-crumbs-contracts"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/36/83/5d1f71007417170d98ffef5d70348174b917b762afafc21f3ebd8ab5e491/bread_crumbs_contracts-0.5.0.tar.gz", hash = "sha256:e69957aedaa6b54ac8ddf81512491147a51a3164248b3ddfc7b41fd2a25c1fa3", size = 24352, upload-time = "2026-10-04T06:23:03.826Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/78/d380630bffd5d8d513b0f9e6f9632e4b796471046de4ae99a535087ad703/bread_crumbs_contracts-0.6.0.tar.gz", hash = "sha256:addc6f8025dc7a19c3b43002b83ea605d91f0c348d4421c0ffd3c2a92584e739", size = 25294, upload-time = "2026-10-05T06:19:26.041Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/5c/7617d35d8f2430c6b041f7ab9e3ab2987f9dc457892a258a4f0c8e21ee90/bread_crumbs_contracts-0.5.0-py3-none-any.whl", hash = "sha256:0c3e9f76662b907c1db7655d28f6740e5021fdbab4f1dfdf76caf914aa038f30", size = 26740, upload-time = "2026-10-04T06:23:02.344Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/44/44e542e5e67d370f947e09871e584b39c248346ff859fba5b05d4ed75590/bread_crumbs_contracts-0.6.0-py3-none-any.whl", hash = "sha256:94ee009bb759c69a62c412313c65a7d271aeff953a0b2af8c4b0eeef68dfaf6b", size = 27732, upload-time = "2026-10-05T06:19:24.834Z" },
 ]
 
 [[package]]
@@ -215,8 +215,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [
@@ -451,7 +451,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bread-crumbs-contracts", specifier = ">=0.5,<0.6" },
+    { name = "bread-crumbs-contracts", specifier = ">=0.6,<0.7" },
     { name = "crumbs-i2c", specifier = ">=0.15,<0.16" },
     { name = "ezo-driver", specifier = ">=0.6,<0.7" },
     { name = "fastapi", specifier = ">=0.142,<0.143" },
