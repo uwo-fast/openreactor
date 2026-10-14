@@ -515,15 +515,18 @@ class Service:
     # Shutdown
 
     def close(self) -> None:
-        """Send stop-all, end a recording run, and close the database.
+        """Send stop-all, release the DCMTs, end a recording run, and close
+        the database.
 
         This runs before the circuits are closed.
         """
         try:
             # Stop-all first, so its events are part of the run. The
             # controller's thread has stopped after this, so ending the run
-            # here cannot race it.
+            # here cannot race it, and the DCMTs can be released. If it did
+            # not stop, they are not: their watchdogs trip instead.
             self.controller.close()
+            release(list(self._slices.values()))
         finally:
             try:
                 if self._run is not None and self._store is not None:
@@ -608,9 +611,6 @@ def running(
                     yield service
                 finally:
                     service.close()
-                    # Only once the controller stopped: if closing it timed
-                    # out, the DCMT watchdogs stay armed and trip.
-                    release(slices)
         finally:
             for ch in channels:
                 ch.port.close()

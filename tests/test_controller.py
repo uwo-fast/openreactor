@@ -371,6 +371,22 @@ def test_close_gives_up_on_a_hung_actuator_without_hanging_the_process():
         release.set()
 
 
+def test_close_says_so_when_the_thread_does_not_stop():
+    """Stop-all reported back, but the thread is still alive: the caller must
+    not treat the controller as stopped."""
+    c = Controller(EzoReader([]), [FakeActuator("heater")], ezo_period_s=2.0)
+    c.start()
+    real = c._thread
+    stuck = threading.Thread(target=threading.Event().wait, args=(1.0,), daemon=True)
+    stuck.start()
+    c._thread = stuck  # stands in for a thread caught in a device call
+    with pytest.raises(TimeoutError, match="did not stop"):
+        c.close(timeout_s=0.3)
+    assert real is not None
+    real.join(2)
+    assert not real.is_alive()
+
+
 def test_a_job_cancelled_before_it_starts_never_touches_its_circuit():
     port = FakePort("ph")
     log: list[str] = []

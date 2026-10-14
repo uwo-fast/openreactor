@@ -275,6 +275,19 @@ def test_no_release_when_the_controller_does_not_stop_in_time(tmp_path: Path):
     assert (0x7E, b"\x00\x00") not in bench.dcmt.commands
 
 
+def test_the_dcmt_is_released_even_if_ending_the_run_fails(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    with pytest.raises(sqlite3.OperationalError), TestClient(bench.app, base_url=LOCAL) as client:
+        client.post("/api/v1/runs", json={"name": "r"})
+        store = bench.app.state.service._store
+
+        def fail(run: int, status: str) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+        store.end_run = fail
+    assert (bench.dcmt.armed, bench.dcmt.brakes) == (0, [1, 1])
+
+
 def test_a_clean_shutdown_releases_the_dcmt(tmp_path: Path):
     bench = Bench(tmp_path, password=False)
     with TestClient(bench.app, base_url=LOCAL) as client:
