@@ -361,6 +361,39 @@ def test_stop_all_or_stopping_the_run_aborts_the_profile(open_bench, how):
     assert bench.rlht.setpoints == [0, 0] and bench.dcmt.pwm == [0, 0]
 
 
+def test_a_profile_on_a_slice_that_did_not_start_is_refused(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.dcmt.caps = 0x74
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        r = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+        assert r.status_code == 503 and "stirrer: motors is not in use" in r.json()["detail"]
+        assert client.get("/api/v1/runs").json() == []
+
+
+def test_a_profile_on_an_unreachable_slice_is_refused(open_bench):
+    bench, client = open_bench
+    bench.dcmt.faults = [OSError(121, "Remote I/O error")] * 100000
+    until(lambda: client.get("/api/v1/status").json()["dcmt_slices"][0]["state"].startswith("unr"))
+    r = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+    assert r.status_code == 503 and "stirrer: motors is unreachable" in r.json()["detail"]
+    bench.dcmt.faults = []
+
+
+def test_a_shutdown_during_a_profile_ends_its_run_interrupted(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        run = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+        run = run.json()["id"]
+        until(lambda: bench.dcmt.pwm[0] != 0)
+    store = Store(bench.database, read_only=True)
+    try:
+        info = store.run(run)
+        assert info is not None and info.status == "interrupted"
+    finally:
+        store.close()
+    assert bench.rlht.setpoints == [0, 0] and bench.dcmt.pwm == [0, 0]
+
+
 def test_a_bad_profile_is_refused_with_every_problem(open_bench):
     _, client = open_bench
     text = 'version = 1\nname = "x"\n[channels]\njacket = [{ set = 90.0 }, { hold = "1m" }]\n'

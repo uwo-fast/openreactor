@@ -64,6 +64,7 @@ class Rig:
             sleep=self.clock.sleep,
         )
         self.controller.subscribe(self.seen.append)
+        self.controller.subscribe(self.runner.notice)  # as the service does
 
     def tick(self, seconds: float) -> None:
         for _ in range(round(seconds / 0.1)):
@@ -145,7 +146,13 @@ def test_a_channel_changed_outside_the_profile_aborts_it_and_nothing_resumes(out
         rig.heater.set_setpoint(1, 450)
     rig.tick(8.0)
     [abort] = rig.events("profile-abort")
-    assert "jacket no longer runs what the profile set" in abort.details
+    reasons = {
+        "stop-all": "stop-all was sent",
+        "e-stop": "the e-stop on heater was pressed",
+        "reboot": "heater: slice-reboot",
+        "operator": "jacket no longer runs what the profile set",
+    }
+    assert abort.details.startswith(reasons[outside])
     assert rig.ended and rig.ended[0][0] == "stopped"
     rig.rlht.flags = 0
     rig.tick(10.0)
@@ -162,8 +169,88 @@ def test_an_unreachable_slice_aborts_the_profile():
     rig.rlht.faults = [OSError(121, "Remote I/O error")] * 1000
     rig.tick(6.0)
     [abort] = rig.events("profile-abort")
-    assert abort.details.startswith("jacket: heater: ")  # unreachable, or unreadable
+    assert "unreachable" in abort.details
     assert rig.ended[0][0] == "stopped"
+
+
+def test_an_abort_while_a_check_is_pending_does_not_leave_the_heater_on():
+    """The 0 is refused while the slice is checked: it is wanted anyway, so
+    the re-assert after the trip sends 0, not the profile's value."""
+    rig = Rig({"jacket": [{"set": 30.0}, {"hold": "60s"}]})
+    rig.tick(2.0)
+    rig.rlht.trip()
+    for _ in range(50):  # until the poll finds the drift and owes a check
+        rig.tick(0.1)
+        if rig.heater._drift_against is not None:
+            break
+    assert rig.heater._drift_against is not None
+    out = rig.runner.abort("aborted by the operator")
+    [safe] = [e for e in out if isinstance(e, Event) and e.kind == "setpoint"]
+    assert "set to 0 as wanted" in safe.result
+    rig.tick(10.0)
+    assert rig.heater.setpoints_deci == [0, 0] and rig.rlht.setpoints == [0, 0]
+
+
+def test_a_bus_outage_aborts_the_profile_and_the_heater_does_not_resume():
+    rig = Rig({"jacket": [{"set": 30.0}, {"ramp": 40.0, "over": "60s"}]})
+    rig.tick(2.0)
+    rig.rlht.faults = [OSError(121, "Remote I/O error")] * 1000
+    rig.tick(6.0)
+    assert rig.events("profile-abort")
+    rig.rlht.faults = []
+    rig.tick(10.0)
+    assert rig.heater.setpoints_deci == [0, 0] and rig.rlht.setpoints == [0, 0]
+
+
+@pytest.mark.parametrize("how", ["e-stop", "stop-all"])
+def test_a_stop_before_a_channel_is_first_set_aborts_the_profile(how):
+    rig = Rig({"jacket": [{"hold": "5s"}, {"set": 30.0}, {"hold": "60s"}]})
+    rig.tick(1.0)
+    if how == "e-stop":
+        rig.rlht.flags = 0x01
+        rig.tick(3.0)
+        rig.rlht.flags = 0
+    else:
+        rig.controller.stop_all("slice")
+    rig.tick(10.0)
+    assert rig.events("profile-abort") and rig.rlht.setpoints == [0, 0]
+
+
+def test_a_stop_while_a_channel_is_at_0_aborts_the_profile():
+    rig = Rig({"jacket": [{"set": 0.0}, {"hold": "5s"}, {"set": 30.0}, {"hold": "60s"}]})
+    rig.tick(1.0)
+    rig.controller.stop_all("slice")
+    rig.tick(10.0)
+    [abort] = rig.events("profile-abort")
+    assert abort.details == "stop-all was sent" and rig.rlht.setpoints == [0, 0]
+
+
+def test_a_reboot_during_a_hold_aborts_the_profile():
+    rig = Rig({"jacket": [{"set": 30.0}, {"hold": "60s"}]})
+    rig.tick(2.0)
+    rig.rlht.reboot()
+    rig.tick(6.0)
+    [abort] = rig.events("profile-abort")
+    assert "slice-reboot" in abort.details
+
+
+def test_a_plain_trip_does_not_abort_the_profile():
+    rig = Rig({"jacket": [{"set": 30.0}, {"hold": "60s"}]})
+    rig.tick(2.0)
+    rig.rlht.trip()
+    rig.tick(8.0)
+    assert not rig.events("profile-abort") and rig.rlht.setpoints == [300, 0]
+
+
+def test_one_failed_read_before_a_send_is_tried_again():
+    rig = Rig({"jacket": [{"set": 30.0}, {"ramp": 40.0, "over": "20s"}]})
+    rig.tick(2.05)
+    rig.rlht.corrupt_replies = {0x7D}  # GET_WATCHDOG, for one step
+    rig.tick(1.0)
+    rig.rlht.corrupt_replies = set()
+    rig.tick(3.0)
+    assert not rig.events("profile-abort")
+    assert rig.rlht.setpoints[0] > 320
 
 
 def test_a_slice_being_checked_is_tried_again_at_the_next_step():

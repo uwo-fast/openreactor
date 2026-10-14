@@ -92,7 +92,8 @@ After a plain watchdog trip, openreactor sends the setpoint again.
 [usage.md](usage.md#run-profiles) describes the profile format and how a
 profile runs. `POST /api/v1/profile` answers 422 with every problem the
 validator finds, including a value outside a channel's range, 409 while a
-run is recording, and 503 when a slice the profile uses is not in use. For
+run is recording, and 503 when a slice the profile uses is not in use or is
+unreachable. A profile's TOML text can be up to 20,000 characters. For
 example:
 
 ```sh

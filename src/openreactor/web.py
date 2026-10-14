@@ -162,7 +162,7 @@ class RunStopped(BaseModel):
 
 class ProfileStart(BaseModel):
     # The profile's TOML text, as in examples/profiles/.
-    profile: str = Field(min_length=1, max_length=60_000)
+    profile: str = Field(min_length=1, max_length=20_000)
     # The run's name and notes; the profile's own when empty.
     name: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=10_000)

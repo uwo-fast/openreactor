@@ -10,7 +10,7 @@
 <details class="mb-3">
   <summary>Run a profile</summary>
   <form class="row g-2 mt-1" hx-post="/ui/profile" hx-target="#notice">
-    <div class="col-12"><textarea class="form-control font-monospace" name="profile" rows="10" required maxlength="60000" placeholder="version = 1&#10;name = &quot;Ramp and hold&quot;&#10;&#10;[channels]&#10;jacket = [{ set = 30.0 }, { ramp = 37.0, over = &quot;30m&quot; }, { hold = &quot;2h&quot; }]" aria-label="Profile, as TOML"></textarea></div>
+    <div class="col-12"><textarea class="form-control font-monospace" name="profile" rows="10" required maxlength="20000" placeholder="version = 1&#10;name = &quot;Ramp and hold&quot;&#10;&#10;[channels]&#10;jacket = [{ set = 30.0 }, { ramp = 37.0, over = &quot;30m&quot; }, { hold = &quot;2h&quot; }]" aria-label="Profile, as TOML"></textarea></div>
     <div class="col-sm-4"><input class="form-control" name="name" placeholder="Run name (the profile's if empty)" maxlength="200" aria-label="Run name"></div>
     <div class="col-sm-6"><input class="form-control" name="notes" placeholder="Notes (optional)" maxlength="10000" aria-label="Notes"></div>
     <div class="col-sm-2"><button class="btn btn-primary w-100">Start</button></div>

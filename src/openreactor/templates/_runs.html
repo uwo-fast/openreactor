@@ -1,6 +1,6 @@
 {% if profile %}
 <div class="alert alert-info d-flex align-items-center justify-content-between">
-  <span>Profile {{ profile.name }} drives run {{ profile.run }}: {{ profile.elapsed_s | clock }} of {{ profile.duration_s | clock }}.</span>
+  <span>Profile {{ profile.name }} drives run {{ profile.run }}: {{ profile.elapsed_s | int | clock }} of {{ profile.duration_s | clock }}.</span>
   <button class="btn btn-sm btn-outline-danger" hx-post="/ui/profile/abort" hx-target="#notice" hx-confirm="Abort the profile? Every channel it drives is sent its safe state.">Abort profile</button>
 </div>
 {% endif %}

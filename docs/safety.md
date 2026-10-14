@@ -136,11 +136,14 @@ setpoints for that slice with 409.
 ## Profiles
 
 A running profile sends setpoints like an operator does, through the same
-checks. It never overrides anything else: if a channel it drives no longer
-runs what it last sent, because of stop-all, an e-stop, a reboot, a drift
-the slice was stopped for, or a slice that cannot be used, the profile is
-aborted. When it ends or is aborted, every channel it set is sent its safe
-state. After openreactor restarts, a profile does not resume.
+checks. It never overrides anything else. It is aborted if a channel it
+drives no longer runs what it last sent, and on stop-all, an e-stop, a
+reboot, a drift the slice was stopped for, a held trip, or one of its slices
+going unreachable, whether or not it had set that channel yet. When it ends
+or is aborted, every channel it set is sent its safe state; a channel that
+cannot take it then is set to 0 as wanted without sending, so its slice's
+own checks stop it, and the profile's value is never sent again. After
+openreactor restarts, a profile does not resume.
 
 ## DCMT motor slices
 

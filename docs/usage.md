@@ -136,12 +136,16 @@ out each channel's value and sends the ones that changed.
   the run ends `completed`.
 - **Abort** it from the Runs page or the API, or stop its run: every channel
   it set goes to its safe state, and the run ends `stopped`.
-- **Stop-all, an e-stop, a reboot, or anything else that changes a channel
-  the profile drives** aborts it the same way. A profile never restarts a
-  heater or a motor that something else stopped.
+- **Stop-all, an e-stop, a reboot, a slice going unreachable, or anything
+  else that stops or changes a channel the profile drives** aborts it the
+  same way, even before the profile has set that channel. A profile never
+  restarts a heater or a motor that something else stopped. A channel that
+  cannot take its safe state at once is left for its slice's checks to stop.
+- A send that fails once, or finds the slice being checked, is tried again
+  at the next step.
 - While a profile drives a channel, a setpoint for it by hand is refused.
-- After openreactor restarts, the run is `interrupted`, and the profile does
-  not resume.
+- When openreactor stops, the profile's run ends `interrupted`, and the
+  profile does not resume when it starts again.
 
 ## EZO calibration
 

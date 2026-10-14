@@ -5,11 +5,12 @@ period it works out what each channel in the profile should run and sends
 what changed. When the profile ends, or is aborted, every channel it
 touched goes to its safe state.
 
-A profile never overrides anything else: if a channel no longer runs what
-the profile last sent it, because of stop-all, an e-stop, a reboot, a
-drift the slice was stopped for, or a setpoint from the operator, the
-profile is aborted. So a profile cannot restart a heater or a motor that
-something else stopped.
+A profile never overrides anything else. It is aborted if a channel no
+longer runs what the profile last sent it, and on any event that stops or
+resets one of its slices, seen through ``notice``: stop-all, an e-stop, a
+reboot, a drift the slice was stopped for, a held trip, or the slice going
+unreachable. So a profile cannot restart a heater or a motor that something
+else stopped, even one it had not set yet.
 """
 
 from __future__ import annotations
@@ -66,6 +67,19 @@ class _Channel:
         else:
             self.slice.set_setpoint(self.config.output, units)
 
+    def forget(self) -> None:
+        self.slice.forget(self.config.output)
+
+
+# Events that stop or reset a slice: on one of the profile's, it is aborted.
+_STOPPING = {
+    "slice-reboot",
+    "slice-watchdog-changed",
+    "slice-setpoints-changed",
+    "slice-duty-changed",
+    "slice-unreachable",
+}
+
 
 class ProfileRunner:
     """One profile running against the configured slices.
@@ -97,6 +111,9 @@ class ProfileRunner:
         self._next = 0.0
         self._finished = finished
         self._wall = wall
+        self._devices = {ch.device.name for ch in self._channels.values()}
+        # Why the profile is to be aborted at its next step, from ``notice``.
+        self._stop: str | None = None
         self.done = False
 
     def elapsed(self, now: float) -> float:
@@ -115,9 +132,28 @@ class ProfileRunner:
             result=result,
         )
 
+    def notice(self, item: Result | Event) -> None:
+        """Watch the controller's events for one that stops one of the slices.
+
+        Call it on the controller's thread, as a listener. It only marks the
+        profile to be aborted at its next step, which runs on the same tick.
+        """
+        if self.done or self._stop is not None or not isinstance(item, Event):
+            return
+        if item.kind == "stop-all":
+            self._stop = "stop-all was sent"
+        elif item.device not in self._devices:
+            return
+        elif item.kind == "e-stop" and item.result == "held":
+            self._stop = f"the e-stop on {item.device} was pressed"
+        elif item.kind in _STOPPING or (item.kind == "slice-trip" and item.result == "held"):
+            self._stop = f"{item.device}: {item.kind}, {item.result}"
+
     def advance(self, now: float) -> list[Result | Event]:
         if self.done:
             return []
+        if self._stop is not None:
+            return self.abort(self._stop)
         if self.start is None:
             self.start = self._next = now
         if now < self._next:
@@ -147,7 +183,10 @@ class ProfileRunner:
                 out.append(self._event("setpoint", ch.describe(units), f"error: {e}", ch))
                 continue
             except SliceError as e:
-                return out + self.abort(f"{name}: {e}")
+                # A read that failed; the next step tries again. A slice that
+                # goes unreachable aborts the profile through its event.
+                out.append(self._event("setpoint", ch.describe(units), f"error: {e}", ch))
+                continue
             ch.sent = units
             out.append(self._event("setpoint", ch.describe(units), channel=ch))
         return out
@@ -171,7 +210,14 @@ class ProfileRunner:
         return out
 
     def _make_safe(self) -> list[Result | Event]:
-        """Send 0 to each channel the profile sent anything to."""
+        """Send 0 to each channel the profile sent anything to.
+
+        A channel that will not take it is set to 0 as wanted without
+        sending, so its slice's own supervision stops it: the next poll
+        finds it running another value than wanted, and the check that
+        follows sends 0 or the safe state. Nothing sends the profile's
+        value again.
+        """
         out: list[Result | Event] = []
         for ch in self._channels.values():
             if ch.sent is None:
@@ -181,10 +227,8 @@ class ProfileRunner:
                     ch.send(0)
                 result = "ok"
             except (SliceBusy, SliceError, CrumbsError, OSError) as e:
-                # A slice that will not take it is stopped by its own
-                # supervision: a check that finds it changed sends its
-                # safe state, and its watchdog trips if it is lost.
-                result = f"error: {e}"
+                ch.forget()
+                result = f"error: {e}; set to 0 as wanted, for the slice's checks to send"
             out.append(self._event("setpoint", ch.describe(0), result, ch))
         return out
 

@@ -8,6 +8,7 @@ connections of their own, so request threads never write.
 
 from __future__ import annotations
 
+import logging
 import math
 import tempfile
 import threading
@@ -44,6 +45,8 @@ from openreactor.rlht import SendFailed, SliceBusy, SliceError, SliceStatus
 from openreactor.runner import ProfileRunner
 from openreactor.slices import Slice, opened_slices, release
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
+
+log = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -181,6 +184,9 @@ class Service:
     # Called on the controller's thread
 
     def _remember(self, item: Result | Event) -> None:
+        runner = self._runner
+        if runner is not None:
+            runner.notice(item)
         if not isinstance(item, Result):
             return
         device, kind = self._sources.get(item.channel, (item.channel, ""))
@@ -307,11 +313,6 @@ class Service:
         it again: an e-stop, a trip, a reboot or stop-all stops the motor
         until it is set again.
         """
-        runner = self._runner
-        if runner is not None and channel in runner.profile.channels:
-            raise Conflict(
-                f"profile {runner.profile.name!r} drives {channel}; abort the profile first"
-            )
         for d in self.config.devices:
             for ch in d.channels:
                 if ch.name == channel:
@@ -362,6 +363,13 @@ class Service:
             )
 
         def work() -> None:
+            # On the controller's thread, so a profile started just before
+            # cannot take the channel between this check and the send.
+            runner = self._runner
+            if runner is not None and ch.name in runner.profile.channels:
+                raise Conflict(
+                    f"profile {runner.profile.name!r} drives {ch.name}; abort the profile first"
+                )
             try:
                 send()
             except SendFailed as e:
@@ -421,10 +429,9 @@ class Service:
 
     def stop_all(self) -> list[Event]:
         # Never cancelled: a stop-all that reports late has still been sent.
+        # A running profile sees the stop-all events and aborts on its next
+        # step, the same tick.
         future = self.controller.stop_all("user")
-        # After it, so stop-all goes first: the profile's channels are then
-        # already at 0, and it ends without sending anything more.
-        self.controller.call(lambda: self._abort_profile("stop-all was sent"))
         try:
             return future.result(timeout=ACTION_TIMEOUT_S)
         except TimeoutError:
@@ -509,11 +516,13 @@ class Service:
             d, ch, s = actuated[n]
             if s is None or not s.started:
                 raise Unreachable(f"{n}: {d.name} is not in use")
+            if s.unreachable:
+                raise Unreachable(f"{n}: {d.name} is unreachable")
             channels[n] = (d, ch, s)
 
         def start() -> int:
             # A running profile's run is recording, so this refuses a second.
-            run = self._start_run(name or profile.name, notes or profile.notes, text)
+            run = self._start_run(name.strip() or profile.name, notes or profile.notes, text)
             runner = ProfileRunner(
                 profile,
                 channels,
@@ -540,7 +549,10 @@ class Service:
 
         def end() -> None:
             if runner is not None and self._runner is runner:
-                self._drop_profile(ended)
+                try:
+                    self._drop_profile(ended)
+                except Exception:
+                    log.exception("could not end the run of profile %r", runner.profile.name)
 
         self.controller.call(end)
 
@@ -563,6 +575,24 @@ class Service:
         for item in runner.abort(why):
             self.controller.publish(item)
         return self._drop_profile("stopped")
+
+    def _interrupt_profile(self) -> None:
+        """Stop the profile at shutdown, leaving stop-all to make it safe."""
+        runner, self._runner = self._runner, None
+        if runner is None:
+            return
+        runner.done = True
+        if runner in self.controller.polled:
+            self.controller.polled.remove(runner)
+        self.controller.publish(
+            Event(
+                self._wall(),
+                "system",
+                "profile-abort",
+                details="openreactor stopped; the profile does not resume",
+                result="interrupted",
+            )
+        )
 
     def abort_profile(self) -> tuple[int, str]:
         """Abort the running profile and end its run, stopped."""
@@ -656,6 +686,10 @@ class Service:
 
         This runs before the circuits are closed.
         """
+        profile = self._runner is not None
+        if profile:
+            # Recorded before stop-all; the profile does not resume.
+            self.controller.call(self._interrupt_profile)
         try:
             # Stop-all first, so its events are part of the run. The
             # controller's thread has stopped after this, so ending the run
@@ -666,8 +700,9 @@ class Service:
         finally:
             try:
                 if self._run is not None and self._store is not None:
+                    ended = "interrupted" if profile else _end_status(self._recorder)
                     self._store.setup()
-                    self._store.end_run(self._run, _end_status(self._recorder))
+                    self._store.end_run(self._run, ended)
                     self._run = None
             finally:
                 if self._store is not None:
