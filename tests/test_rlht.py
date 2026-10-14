@@ -1032,7 +1032,121 @@ def test_a_setpoint_is_refused_while_a_drift_is_being_checked():
     assert rlht.setpoints == [410, 0]
 
 
-def test_with_checks_failing_a_setpoint_is_not_told_a_check_is_pending():
+LID = ChannelConfig(name="lid", label="Lid", output=2, tc=2)
+
+
+def test_a_setpoint_is_refused_after_a_reboot_no_poll_has_seen():
+    """A power-cut e-stop released, then a setpoint at once: the other
+    output's old setpoint must not go to a slice with its watchdog off."""
+    rlht = FakeRlht()
+    s, clock = started(rlht, device(JACKET, LID))
+    s.set_setpoint(2, 600)
+    c, seen = controller_for(s, clock)
+    tick(c, clock, 1.0)
+    rlht.reboot()
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 400)
+    assert (rlht.setpoints, rlht.armed) == ([0, 0], 0)
+    tick(c, clock, 1.0)  # the check owed runs in the next poll's cycle
+    [reboot] = events(seen, "slice-reboot")
+    assert reboot.result == "re-asserted" and rlht.armed == 1
+    assert rlht.setpoints == [0, 0] and s.setpoints_deci == [0, 0]
+
+
+def test_a_setpoint_is_refused_after_a_trip_no_poll_has_seen():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    s.set_setpoint(1, 400)
+    c, seen = controller_for(s, clock)
+    tick(c, clock, 1.0)
+    rlht.trip()
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 450)
+    tick(c, clock, 1.0)
+    [trip] = events(seen, "slice-trip")
+    assert trip.result == "re-asserted" and rlht.setpoints == [400, 0]
+
+
+def test_a_setpoint_is_refused_while_the_e_stop_is_held_but_unseen():
+    rlht = FakeRlht()
+    s, _ = started(rlht)
+    rlht.flags = 0x01  # e-stop held
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 400)
+    assert rlht.setpoints == [0, 0]
+
+
+def test_a_watchdog_timeout_changed_at_the_slice_is_treated_as_a_reboot():
+    """A build that arms at boot (#53) shows its reboot only as its own
+    timeout, when that differs from the controller's."""
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    s.set_setpoint(1, 400)
+    c, seen = controller_for(s, clock)
+    tick(c, clock, 1.0)
+    rlht.timeout_ms = 1000
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 450)
+    tick(c, clock, 1.0)  # the check owed runs in the next poll's cycle
+    [reboot] = events(seen, "slice-reboot")
+    assert reboot.result == "re-asserted"
+    assert "watchdog timeout 1000 ms, not 5000 ms" in reboot.details
+    assert rlht.timeout_ms == 5000 and s.setpoints_deci == [0, 0]
+    tick(c, clock, 2.0)
+    s.set_setpoint(1, 450)  # taken again once the slice is as left
+    assert rlht.setpoints == [450, 0]
+
+
+def test_a_setpoint_is_refused_after_a_trip_already_cleared():
+    rlht = FakeRlht()
+    s, _ = started(rlht)
+    rlht.trip_count += 1  # tripped and cleared by another frame since
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 400)
+
+
+def test_a_setpoint_is_refused_while_tripped_with_the_count_unchanged():
+    rlht = FakeRlht()
+    s, _ = started(rlht)
+    rlht.tripped = 1  # the count wrapped round to where it was
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(1, 400)
+
+
+def test_a_setpoint_is_refused_while_another_controller_drives_the_slice():
+    rlht = FakeRlht()
+    s, _ = started(rlht)
+    rlht.setpoints = [500, 0]
+    with pytest.raises(SliceBusy, match="changed since it was last checked"):
+        s.set_setpoint(2, 300)
+    assert rlht.setpoints == [500, 0]
+
+
+def test_a_slice_without_a_watchdog_is_still_checked_for_drift():
+    rlht = FakeRlht(caps=0x3F)
+    s, _ = started(rlht, device(allow_unprotected=True))
+    s.set_setpoint(1, 400)
+    rlht.setpoints = [0, 0]
+    with pytest.raises(SliceBusy):
+        s.set_setpoint(1, 450)
+
+
+def test_a_setpoint_on_every_tick_does_not_starve_the_poll():
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    checks: list = []
+    supervise = s._supervise
+    s._supervise = lambda w: checks.append(w) or supervise(w)  # type: ignore[method-assign]
+    for i in range(100):  # ten seconds, a setpoint on every tick
+        s.set_setpoint(1, 400 + i % 2)
+        c.step()
+        clock.now = round(clock.now + 0.1, 9)
+    polls = [r for r in seen if isinstance(r, Result) and r.channel == "jacket"]
+    assert len(polls) >= 9 and len(checks) >= 1
+
+
+def test_with_checks_failing_a_setpoint_is_refused_as_unreadable():
     rlht = FakeRlht()
     s, clock = started(rlht)
     c, _ = controller_for(s, clock)
@@ -1040,9 +1154,12 @@ def test_with_checks_failing_a_setpoint_is_not_told_a_check_is_pending():
     rlht.fail_opcodes[SET_SETPOINTS] = OSError(errno.EIO, "I/O error")
     rlht.setpoints = [500, 0]  # set by something else; the safe state fails
     tick(c, clock, 10.0)
-    # The send is what fails, and that is what the operator is told.
-    with pytest.raises(SendFailed):
+    # Trips and reboots go unseen while the watchdog cannot be read, so no
+    # setpoint goes out, and the operator is told why.
+    sent = len(rlht.commands)
+    with pytest.raises(SliceError, match="could not read the slice"):
         s.set_setpoint(1, 400)
+    assert len(rlht.commands) == sent
 
 
 def test_a_slice_that_did_not_start_says_so_in_its_status():
