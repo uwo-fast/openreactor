@@ -345,7 +345,11 @@ class DcmtSlice:
             estop=bool(last.estop) if last else None,
             motors=motors,
             watchdog=_watchdog(self._last_watchdog) if self._last_watchdog else None,
-            desired_pct=(pwm_to_duty(self.pwm[0]), pwm_to_duty(self.pwm[1])),
+            desired_pct=(
+                (pwm_to_duty(self.pwm[0]), pwm_to_duty(self.pwm[1]))
+                if self.started and not self.read_only
+                else None
+            ),
         )
 
     def set_duty(self, motor: int, pwm: int) -> None:

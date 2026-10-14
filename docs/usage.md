@@ -18,16 +18,15 @@ command as `uv run openreactor ...`. The browser UI and the HTTP API are in
 | `openreactor ezo cal DEVICE POINT [VALUE]` | Calibrate one point. |
 | `openreactor ezo cal DEVICE clear --yes` | Erase a circuit's calibration. |
 | `openreactor serve [--host H] [--port P]` | Serve the browser UI and the HTTP API until Ctrl-C. |
-| `openreactor status [--url URL]` | Show each RLHT slice's state, from the running server. |
+| `openreactor status [--url URL]` | Show each slice's state, from the running server. |
 | `openreactor hash-password` | Make a `server.password_hash`. |
 | `openreactor profile validate [-c CONFIG] [--dry-run] FILE` | Check a run profile, and optionally print its timeline. |
 
 Commands that use a configuration read `/etc/openreactor/openreactor.toml`
 unless you pass `-c FILE`.
 
-`run` and `serve` start each RLHT slice in the configuration. `read` and
-`ezo cal` never touch a slice. No command drives a DCMT slice yet; `run`
-skips them with a note, and `serve` shows them as not supported.
+`run` and `serve` start each RLHT and DCMT slice in the configuration.
+`read` and `ezo cal` never touch a slice.
 
 ## One controller at a time
 
@@ -83,10 +82,11 @@ UTC, and name.
 
 ## Slice status
 
-`openreactor status` shows each RLHT slice: its firmware, state, watchdog,
-e-stop, mode, and each output's temperature, setpoint, duty and
-thermocouple. When the slice runs a setpoint other than the one openreactor
-wants, the line shows the wanted one too.
+`openreactor status` shows each slice: its firmware, state, watchdog,
+e-stop and mode. For an RLHT, each output's temperature, setpoint, duty and
+thermocouple; for a DCMT, each motor's duty and whether it is braked. When
+the slice runs a setpoint or duty other than the one openreactor wants, the
+line shows the wanted one too.
 
 `status` asks the running server, at the configuration's `[server]` address
 or at `--url`. It sends the password from `OPENREACTOR_PASSWORD`. Without

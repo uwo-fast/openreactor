@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from fakes import FakeActuator, FakeI2cBus, FakePort, FakeRlht
+from fakes import FakeActuator, FakeDcmt, FakeI2cBus, FakePort, FakeRlht
 from fastapi.testclient import TestClient
 
 from openreactor import cli
@@ -45,6 +45,13 @@ address = 0x0A
 channels.jacket = { output = 1, tc = 1, max_setpoint = 80 }
 
 [[device]]
+name = "motors"
+kind = "dcmt"
+bus = "/dev/i2c-1"
+address = 0x14
+channels.stirrer = { motor = 1 }
+
+[[device]]
 name = "air"
 kind = "ezo-hum"
 bus = "/dev/i2c-1"
@@ -73,6 +80,7 @@ class Bench:
         # The config's RLHT, answering on a fake bus.
         self.rlht = FakeRlht()
         self.rlht_address = 0x0A  # where it answers; the config says 0x0A
+        self.dcmt = FakeDcmt()
         # What serve would print: start-up problems and events, then events.
         self.printed: list = []
         self.lock = tmp_path / "openreactor.lock"
@@ -86,7 +94,7 @@ class Bench:
                 self.text,
                 open_port=open_port,
                 actuators=[FakeActuator("jacket", self.log)],
-                open_bus=lambda path: FakeI2cBus({self.rlht_address: self.rlht}),
+                open_bus=lambda path: FakeI2cBus({self.rlht_address: self.rlht, 0x14: self.dcmt}),
                 lock_path=self.lock,
                 clock=fast_clock,
                 sleep=fast_sleep,

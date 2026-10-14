@@ -5,7 +5,10 @@
 <table class="table table-sm">
   <thead><tr><th>Device</th><th>Kind</th><th>Status</th></tr></thead>
   <tbody>
-    {% for d in devices %}<tr><td>{{ d.name }}</td><td>{{ d.kind }}</td><td>{{ d.status }}</td></tr>{% endfor %}
+    {% for d in devices %}<tr><td>{{ d.name }}</td><td>{{ d.kind }}</td><td>{{ d.status }}
+      {% if d.kind == "dcmt" and d.status.startswith("watchdog trip held") %}
+      <button class="btn btn-sm btn-outline-warning ms-2" hx-post="/ui/devices/{{ d.name }}/clear-trip" hx-target="#notice" hx-confirm="Clear the watchdog trip on {{ d.name }}? Its motors stay braked until you set a duty.">Clear trip</button>
+      {% endif %}</td></tr>{% endfor %}
   </tbody>
 </table>
 

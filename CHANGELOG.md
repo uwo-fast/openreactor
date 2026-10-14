@@ -89,6 +89,17 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   watchdog, e-stop, mode and outputs from the running server. With no
   server it reads nothing, since reading a slice feeds its watchdog.
 - `/api/v1/status` has the same slice detail under `slices`.
+- DCMT motor slices, started by `run` and `serve`. Each motor runs open
+  loop at a duty from -100 to 100 %, set from the API and the Controls page;
+  0 brakes it. Start-up and stop-all send brakes on, open loop, then PWM 0.
+- A DCMT motor never resumes on its own: after an e-stop, a watchdog trip,
+  a reboot or stop-all it stays stopped until its duty is set again. A duty
+  is refused if the slice changed since it was last checked.
+- A DCMT watchdog trip that latches is held, and cleared only from the
+  Devices page or `POST /api/v1/devices/{device}/clear-trip`. A clean
+  shutdown disarms the DCMT watchdog after the safe state.
+- `/api/v1/status` shows each DCMT under `dcmt_slices`, and
+  `openreactor status` prints it.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
   channel. `openreactor profile validate` checks one, and `--dry-run` prints
   its timeline. An example is in `examples/profiles/`.

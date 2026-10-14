@@ -24,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from openreactor.config import SLICE_KINDS
+from openreactor.dcmt import duty_to_pwm, pwm_to_duty
 from openreactor.errors import HANDLED, error_detail, error_status
 from openreactor.ezo import FAMILIES
 from openreactor.security import NoFraming, authorize
@@ -86,7 +87,7 @@ def _actuated(svc: Service) -> list[dict[str, Any]]:
             "label": ch.label,
             "device": d.name,
             "kind": d.kind,
-            "max": setpoint_limit(ch),
+            "max": setpoint_limit(ch) if d.kind == "rlht" else 100,
         }
         for d in svc.config.devices
         if d.kind in SLICE_KINDS
@@ -241,7 +242,20 @@ async def setpoint(request: Request, channel: str) -> HTMLResponse:
 
     def work() -> str:
         svc.set_setpoint(channel, value)
+        if svc.channel_kind(channel) == "dcmt":
+            return f"{channel} set to {pwm_to_duty(duty_to_pwm(value)):g} %."
         return f"{channel} set to {round(value * 10) / 10:g} °C."
+
+    return await _act(request, work)
+
+
+@actions.post("/devices/{device}/clear-trip", response_class=HTMLResponse)
+async def clear_trip(request: Request, device: str) -> HTMLResponse:
+    svc = _service(request)
+
+    def work() -> str:
+        svc.clear_trip(device)
+        return f"{device}: watchdog trip cleared; the motors stay stopped until set again."
 
     return await _act(request, work)
 

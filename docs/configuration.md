@@ -139,9 +139,19 @@ a slice keeps its last output. [safety.md](safety.md) explains the watchdog.
 
 ### DCMT motor slices
 
-openreactor does not drive DCMT slices yet. It accepts them in the file;
-`run` skips them with a note, and `serve` shows them as not supported. A
-DCMT channel has a `label` and a `motor`, 1 or 2.
+A DCMT channel has a `label` and a `motor`, 1 or 2. openreactor drives each
+motor open loop, at a duty from -100 to 100 %, and does not use the slice's
+position or speed loops. `allow_unprotected` works as for an RLHT.
+
+```toml
+[[device]]
+name = "motors"
+kind = "dcmt"
+bus = "/dev/i2c-1"
+address = 0x14
+channels.stirrer = { label = "Stirrer", motor = 1 }
+channels.pump = { label = "Feed pump", motor = 2 }
+```
 
 ### EZO sensors
 

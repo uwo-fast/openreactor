@@ -27,7 +27,7 @@ from crumbs_i2c import Bus, LinuxBus
 
 from openreactor import __version__
 from openreactor.auth import hash_password
-from openreactor.config import Config, ConfigError, DeviceConfig, load_config
+from openreactor.config import SLICE_KINDS, Config, ConfigError, DeviceConfig, load_config
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
     FAMILIES,
@@ -46,7 +46,7 @@ from openreactor.ezo import (
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld, live_holder
 from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
-from openreactor.rlht import opened_slices
+from openreactor.slices import opened_slices, release
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ def open_port(device: DeviceConfig) -> EzoPort:
 
 
 def actuators(config: Config) -> list[Actuator]:
-    """Return the outputs stop-all makes safe, other than the RLHT slices.
+    """Return the outputs stop-all makes safe, other than the slices.
 
     The slices add themselves. Tests replace this with fakes.
     """
@@ -215,8 +215,8 @@ def _controller(
 ) -> Iterator[tuple[Controller, list[Result | Event]]]:
     """Take the lock, open and check the devices, and yield a controller.
 
-    The EZO circuits are always opened; the RLHT slices are started only
-    with ``with_slices``. The controller comes with the start-up problems
+    The EZO circuits are always opened; the slices are started only with
+    ``with_slices``. The controller comes with the start-up problems
     and events. On the way out, even on Ctrl-C or SIGTERM, stop-all is sent
     before anything is closed.
     """
@@ -253,6 +253,7 @@ def _controller(
                     yield controller, problems
                 finally:
                     controller.close()
+                    release(slices)
         finally:
             for ch in channels:
                 ch.port.close()
@@ -345,23 +346,20 @@ def _database(config: Config) -> Path:
 
 
 def _slice_channels(config: Config) -> dict[str, tuple[str, str]]:
-    """Map each RLHT channel to its device's name and kind, for the recorder."""
+    """Map each slice channel to its device's name and kind, for the recorder."""
     return {
-        ch.name: (d.name, d.kind) for d in config.devices if d.kind == "rlht" for ch in d.channels
+        ch.name: (d.name, d.kind)
+        for d in config.devices
+        if d.kind in SLICE_KINDS
+        for ch in d.channels
     }
 
 
 def _run(args: argparse.Namespace, config: Config) -> int:
     devices = [d for d in config.devices if d.kind in FAMILIES]
-    if not devices and not any(d.kind == "rlht" for d in config.devices):
-        print(f"error: {args.config} lists no EZO devices or RLHT slices", file=sys.stderr)
+    if not devices and not any(d.kind in SLICE_KINDS for d in config.devices):
+        print(f"error: {args.config} lists no EZO devices or slices", file=sys.stderr)
         return 1
-    unsupported = [d.name for d in config.devices if d.kind == "dcmt"]
-    if unsupported:
-        print(
-            f"note: not using {', '.join(unsupported)}: DCMT slices are not supported yet",
-            file=sys.stderr,
-        )
     config_text = Path(args.config).read_text()
     run: int | None = None
     recorder: Recorder | None = None
@@ -610,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     serving.add_argument("--port", type=int, help="the port to bind (default server.port)")
     serving.set_defaults(func=_serve)
 
-    status = commands.add_parser("status", help="show each RLHT slice's state")
+    status = commands.add_parser("status", help="show each slice's state")
     status.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
     status.add_argument(
         "--url", help="a running server's status URL (default: from the config's [server])"
@@ -664,7 +662,7 @@ def _status_url(config: Config) -> str:
 
 
 def _status(args: argparse.Namespace) -> int:
-    """Print each RLHT slice's state as the running server reports it.
+    """Print each slice's state as the running server reports it.
 
     With no server it reads nothing from the bus. Every reply a slice builds
     feeds its watchdog, so reading a slice after openreactor stopped would
@@ -725,34 +723,57 @@ def _holder() -> str:
 
 def _print_server_status(status: dict[str, Any], url: str) -> None:
     slices = status.get("slices")
+    dcmt_slices = status.get("dcmt_slices")
     devices = status.get("devices", [])
     if slices is None:
         print("(the server predates slice detail; its device status follows)")
     else:
         _print_status(slices)
+    if dcmt_slices is not None:
+        _print_dcmt_status(dcmt_slices)
+    shown = {"rlht"} if slices is not None else set()
+    if dcmt_slices is not None:
+        shown.add("dcmt")
     for d in devices:
-        if slices is None or d["kind"] != "rlht":
+        if d["kind"] not in shown:
             print(f"{d['name']:<10} {d['kind']:<8} {d['status']}")
     print(f"(from the server at {url})")
 
 
+def _print_slice_header(s: dict[str, Any]) -> None:
+    version = f"  {s['version']}" if s.get("version") else ""
+    print(f"{s['name']}  0x{s['address']:02X}{version}")
+    if s["state"] != "ok":
+        print(f"  state     {s['state']}")
+    w = s.get("watchdog")
+    if w is not None:
+        armed = f"armed {w['timeout_ms']} ms" if w["armed"] else "disarmed"
+        tripped = ", TRIPPED" if w["tripped"] else ""
+        print(f"  watchdog  {armed}, trips {w['trip_count']}{tripped}")
+    elif s.get("caps") is not None:
+        print("  watchdog  none: the slice has no command watchdog")
+    if s.get("estop") is not None:
+        print(f"  e-stop    {'held' if s['estop'] else 'clear'}")
+    if s.get("mode") is not None:
+        print(f"  mode      {s['mode']}")
+
+
+def _print_dcmt_status(slices: Sequence[dict[str, Any]]) -> None:
+    for s in slices:
+        _print_slice_header(s)
+        desired = s.get("desired_pct")
+        for m in s.get("motors", []):
+            label = m["channel"] or f"motor {m['motor']}"
+            brake = "  braked" if m["brake"] else ""
+            wanted = ""
+            if desired is not None and m["duty_pct"] != desired[m["motor"] - 1]:
+                wanted = f"  (wanted {desired[m['motor'] - 1]:.1f})"
+            print(f"  {label:<9} duty {m['duty_pct']:6.1f} %{brake}{wanted}")
+
+
 def _print_status(slices: Sequence[dict[str, Any]]) -> None:
     for s in slices:
-        version = f"  {s['version']}" if s.get("version") else ""
-        print(f"{s['name']}  0x{s['address']:02X}{version}")
-        if s["state"] != "ok":
-            print(f"  state     {s['state']}")
-        w = s.get("watchdog")
-        if w is not None:
-            armed = f"armed {w['timeout_ms']} ms" if w["armed"] else "disarmed"
-            tripped = ", TRIPPED" if w["tripped"] else ""
-            print(f"  watchdog  {armed}, trips {w['trip_count']}{tripped}")
-        elif s.get("caps") is not None:
-            print("  watchdog  none: the slice has no command watchdog")
-        if s.get("estop") is not None:
-            print(f"  e-stop    {'held' if s['estop'] else 'clear'}")
-        if s.get("mode") is not None:
-            print(f"  mode      {s['mode']}")
+        _print_slice_header(s)
         desired = s.get("desired_c")
         for o in s.get("outputs", []):
             label = o["channel"] or f"output {o['output']}"

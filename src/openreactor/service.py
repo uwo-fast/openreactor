@@ -21,8 +21,9 @@ from typing import TypeVar
 
 from crumbs_i2c import Bus, LinuxBus
 
-from openreactor.config import SETPOINT_MAX_C, ChannelConfig, Config, DeviceConfig
+from openreactor.config import SETPOINT_MAX_C, SLICE_KINDS, ChannelConfig, Config, DeviceConfig
 from openreactor.controller import Actuator, Controller, Event
+from openreactor.dcmt import DcmtSlice, DcmtStatus, duty_to_pwm, pwm_to_duty
 from openreactor.ezo import (
     FAMILIES,
     EzoChannel,
@@ -38,14 +39,8 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
-from openreactor.rlht import (
-    RlhtSlice,
-    SendFailed,
-    SliceBusy,
-    SliceError,
-    SliceStatus,
-    opened_slices,
-)
+from openreactor.rlht import SendFailed, SliceBusy, SliceError, SliceStatus
+from openreactor.slices import Slice, opened_slices, release
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -147,7 +142,7 @@ class Service:
         database: Path,
         problems: Sequence[Result | Event] = (),
         wall: Callable[[], float] = time.time,
-        slices: Sequence[RlhtSlice] = (),
+        slices: Sequence[Slice] = (),
     ):
         self.config = config
         self._config_text = config_text
@@ -167,7 +162,7 @@ class Service:
             d: (d, dev.kind) for d, dev in self._ezo.items()
         }
         for d in config.devices:
-            if d.kind == "rlht":
+            if d.kind in SLICE_KINDS:
                 self._sources.update({ch.name: (d.name, d.kind) for ch in d.channels})
         controller.subscribe(self._remember)
 
@@ -193,15 +188,16 @@ class Service:
     def devices(self) -> list[DeviceState]:
         states: list[DeviceState] = []
         for d in self.config.devices:
-            if d.kind == "dcmt":
-                status = "DCMT slices are not supported yet"
-            elif d.name in self._problems:
+            s = self._slices.get(d.name)
+            if d.name in self._problems:
                 status = _problem_text(self._problems[d.name])
-            elif d.name in self._slices and self._slices[d.name].unreachable:
+            elif s is not None and s.unreachable:
                 status = "unreachable: 3 polls failed in a row"
-            elif d.name in self._slices and self._slices[d.name].estop:
+            elif s is not None and s.estop:
                 status = "e-stop held on the slice"
-            elif d.name in self._slices and self._slices[d.name].read_only:
+            elif isinstance(s, DcmtSlice) and s.held:
+                status = "watchdog trip held: clear it to drive the motors"
+            elif s is not None and s.read_only:
                 status = "read-only: the slice has no command watchdog"
             else:
                 status = "ok"
@@ -226,7 +222,7 @@ class Service:
                 if d.kind != "rlht":
                     continue
                 s = self._slices.get(d.name)
-                if s is not None:
+                if s is not None and not isinstance(s, DcmtSlice):
                     out.append(s.status(why(d.name) if not s.started else None))
                 else:
                     out.append(SliceStatus(d.name, d.address, why(d.name) or "not in use"))
@@ -244,6 +240,37 @@ class Service:
                 if d.kind == "rlht"
             ]
 
+    def dcmt_slices(self) -> list[DcmtStatus]:
+        """Return each configured DCMT slice as the controller last saw it.
+
+        It is read on the controller's thread, so each status is consistent.
+        """
+
+        def snapshot() -> list[DcmtStatus]:
+            out: list[DcmtStatus] = []
+            for d in self.config.devices:
+                if d.kind != "dcmt":
+                    continue
+                s = self._slices.get(d.name)
+                p = self._problems.get(d.name)
+                why = _problem_text(p) if p is not None else None
+                if isinstance(s, DcmtSlice):
+                    out.append(s.status(why if not s.started else None))
+                else:
+                    out.append(DcmtStatus(d.name, d.address, why or "not in use"))
+            return out
+
+        future = self.controller.call(snapshot)
+        try:
+            return future.result(timeout=SLICE_STATUS_TIMEOUT_S)
+        except TimeoutError:
+            future.cancel()
+            return [
+                DcmtStatus(d.name, d.address, "unknown: the controller did not answer in time")
+                for d in self.config.devices
+                if d.kind == "dcmt"
+            ]
+
     def channels(self) -> list[ChannelState]:
         with self._lock:
             return sorted(self._latest.values(), key=lambda c: c.name)
@@ -257,36 +284,54 @@ class Service:
         return recorder.failed if recorder is not None else None
 
     def set_setpoint(self, channel: str, value: float) -> None:
-        """Set an RLHT channel's setpoint in °C, rounded to a tenth of a degree.
+        """Set an actuated channel's setpoint.
 
-        It stays the desired setpoint, sent again after a trip or a reboot,
-        until it is set again or stop-all or an e-stop zeroes it.
+        On an RLHT channel it is a temperature in °C, rounded to a tenth of
+        a degree. It stays the desired setpoint, sent again after a trip or
+        a reboot, until it is set again or stop-all or an e-stop zeroes it.
+
+        On a DCMT channel it is the motor's duty in percent, -100 to 100,
+        rounded to the slice's PWM steps; 0 brakes the motor. Nothing sends
+        it again: an e-stop, a trip, a reboot or stop-all stops the motor
+        until it is set again.
         """
         for d in self.config.devices:
             for ch in d.channels:
                 if ch.name == channel:
-                    self._set_slice_setpoint(d, ch, value)
+                    if d.kind == "dcmt":
+                        self._set_slice_duty(d, ch, value)
+                    else:
+                        self._set_slice_setpoint(d, ch, value)
                     return
         raise NotFound(f"no actuated channel {channel!r}")
 
-    def _set_slice_setpoint(self, d: DeviceConfig, ch: ChannelConfig, value: float) -> None:
-        if d.kind != "rlht":
-            raise Unavailable(
-                f"{ch.name} is on a {d.kind} slice; DCMT slices are not supported yet"
-            )
-        limit = setpoint_limit(ch)
-        if not math.isfinite(value) or value < 0:
-            raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
-        deci = round(value * 10)
-        # Compare in tenths, as sent: 80.06 goes as 80.1.
-        if deci > math.floor(limit * 10 + 1e-9):
-            what = "its max_setpoint" if ch.max_setpoint is not None else "the most the slice takes"
-            raise Invalid(f"{ch.name}: {deci / 10:g} °C is above {what}, {limit:g} °C")
+    def channel_kind(self, channel: str) -> str | None:
+        """Return the kind of slice an actuated channel is on, or None."""
+        for d in self.config.devices:
+            if any(ch.name == channel for ch in d.channels):
+                return d.kind
+        return None
+
+    def _set_slice_duty(self, d: DeviceConfig, ch: ChannelConfig, value: float) -> None:
+        if not math.isfinite(value) or not -100 <= value <= 100:
+            raise Invalid(f"{ch.name}: the duty must be from -100 to 100 %")
+        pwm = duty_to_pwm(value)
+        s = self._slice(d)
+        assert isinstance(s, DcmtSlice)
+        self._drive(d, ch, f"{pwm_to_duty(pwm):g} %", lambda: s.set_duty(ch.output, pwm))
+
+    def _slice(self, d: DeviceConfig) -> Slice:
         s = self._slices.get(d.name)
         if s is None:
             problem = self._problems.get(d.name)
             why = f": {problem.detail}" if problem is not None and problem.detail else ""
             raise Unreachable(f"{d.name} is not in use{why}")
+        return s
+
+    def _drive(
+        self, d: DeviceConfig, ch: ChannelConfig, details: str, send: Callable[[], None]
+    ) -> None:
+        """Run ``send`` on the controller's thread and log it as a setpoint event."""
 
         def event(result: str = "ok") -> Event:
             return Event(
@@ -295,13 +340,13 @@ class Service:
                 "setpoint",
                 device=d.name,
                 channel=ch.name,
-                details=f"{deci / 10:g} °C",
+                details=details,
                 result=result,
             )
 
         def work() -> None:
             try:
-                s.set_setpoint(ch.output, deci)
+                send()
             except SendFailed as e:
                 self.controller.publish(event(f"error: {e}"))
                 raise
@@ -316,6 +361,42 @@ class Service:
             # slice runs with what is wanted, and send the safe state if they
             # differ.
             raise DeviceFailed(f"{e}; it may have reached the slice") from None
+        except SliceError as e:
+            raise Unreachable(str(e)) from None
+
+    def _set_slice_setpoint(self, d: DeviceConfig, ch: ChannelConfig, value: float) -> None:
+        limit = setpoint_limit(ch)
+        if not math.isfinite(value) or value < 0:
+            raise Invalid(f"{ch.name}: the setpoint must be 0 °C or more")
+        deci = round(value * 10)
+        # Compare in tenths, as sent: 80.06 goes as 80.1.
+        if deci > math.floor(limit * 10 + 1e-9):
+            what = "its max_setpoint" if ch.max_setpoint is not None else "the most the slice takes"
+            raise Invalid(f"{ch.name}: {deci / 10:g} °C is above {what}, {limit:g} °C")
+        s = self._slice(d)
+        assert not isinstance(s, DcmtSlice)
+        self._drive(d, ch, f"{deci / 10:g} °C", lambda: s.set_setpoint(ch.output, deci))
+
+    def clear_trip(self, device: str) -> list[Event]:
+        """Clear a latched watchdog trip on a DCMT slice; its motors stay stopped."""
+        d = next((d for d in self.config.devices if d.name == device), None)
+        if d is None or d.kind != "dcmt":
+            raise NotFound(f"no DCMT device {device!r}")
+        s = self._slice(d)
+        assert isinstance(s, DcmtSlice)
+
+        def work() -> list[Event]:
+            events = s.clear_trip()
+            for e in events:
+                self.controller.publish(e)
+            return events
+
+        try:
+            return _wait(self.controller.call(work))
+        except SliceBusy as e:
+            raise Conflict(str(e)) from None
+        except SendFailed as e:
+            raise DeviceFailed(f"{e}; the trip may or may not be cleared") from None
         except SliceError as e:
             raise Unreachable(str(e)) from None
 
@@ -434,15 +515,18 @@ class Service:
     # Shutdown
 
     def close(self) -> None:
-        """Send stop-all, end a recording run, and close the database.
+        """Send stop-all, release the DCMTs, end a recording run, and close
+        the database.
 
         This runs before the circuits are closed.
         """
         try:
             # Stop-all first, so its events are part of the run. The
             # controller's thread has stopped after this, so ending the run
-            # here cannot race it.
+            # here cannot race it, and the DCMTs can be released. If it did
+            # not stop, they are not: their watchdogs trip instead.
             self.controller.close()
+            release(list(self._slices.values()))
         finally:
             try:
                 if self._run is not None and self._store is not None:
@@ -476,7 +560,7 @@ def running(
     """Start the controller and yield the service.
 
     This takes the controller lock, opens and checks the circuits, and
-    starts the RLHT slices and the controller's thread. On the way out,
+    starts the slices and the controller's thread. On the way out,
     stop-all is sent before anything closes. ``lock_path=None`` means the
     caller already holds the lock. ``on_event`` gets each start-up problem
     and event, then every event the controller publishes.

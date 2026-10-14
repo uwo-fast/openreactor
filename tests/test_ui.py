@@ -98,6 +98,34 @@ def test_start_a_run_stop_it_and_export_it(open_bench):
         assert "readings.csv" in z.namelist()
 
 
+def test_send_a_motor_duty(open_bench):
+    bench, client = open_bench
+    controls = client.get("/controls").text
+    assert 'hx-post="/ui/channels/stirrer/setpoint"' in controls
+    assert 'min="-100" max="100"' in controls
+    r = client.post("/ui/channels/stirrer/setpoint", data={"value": "50"}, headers=HX)
+    assert r.status_code == 200 and "stirrer set to 50.2 %." in r.text
+    assert bench.dcmt.pwm == [128, 0]
+    r = client.post("/ui/channels/stirrer/setpoint", data={"value": "150"}, headers=HX)
+    assert r.status_code == 422 and "from -100 to 100 %" in r.text
+
+
+def test_clear_a_held_trip_from_the_devices_page(open_bench):
+    bench, client = open_bench
+    assert "Clear trip" not in client.get("/devices").text
+    bench.dcmt.trip()
+    until(lambda: "Clear trip" in client.get("/devices").text)
+    page = client.get("/devices").text
+    assert 'hx-post="/ui/devices/motors/clear-trip"' in page
+    assert "Its motors stay braked until you set a duty." in page
+    r = client.post("/ui/devices/motors/clear-trip", headers=HX)
+    assert r.status_code == 200
+    assert "motors: watchdog trip cleared; the motors stay stopped until set again." in r.text
+    assert bench.dcmt.tripped == 0 and bench.dcmt.pwm == [0, 0]
+    r = client.post("/ui/devices/motors/clear-trip", headers=HX)
+    assert r.status_code == 409 and "no watchdog trip is held" in r.text
+
+
 def test_send_a_setpoint(open_bench):
     bench, client = open_bench
     assert 'hx-post="/ui/channels/jacket/setpoint"' in client.get("/controls").text
@@ -127,7 +155,7 @@ def test_stop_all(open_bench):
     bench, client = open_bench
     r = client.post("/ui/stop-all", headers=HX)
     assert r.status_code == 200
-    assert "Stop-all sent: jacket, heater." in r.text
+    assert "Stop-all sent: jacket, heater, motors." in r.text
     assert "alert-success" in r.text
     assert bench.log == ["safe jacket"]
 

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import errno
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -69,7 +69,6 @@ from crumbs_i2c import (
     Bus,
     Controller,
     CrumbsError,
-    LinuxBus,
     Message,
 )
 
@@ -866,59 +865,3 @@ def _describe(e: BaseException) -> str:
     if isinstance(e, OSError) and e.errno in (errno.ENXIO, errno.EREMOTEIO):
         return "no answer on the bus"
     return str(e) or type(e).__name__
-
-
-def _open_linux_bus(path: str) -> Bus:
-    return LinuxBus(path)
-
-
-@contextmanager
-def opened_slices(
-    devices: Sequence[DeviceConfig],
-    *,
-    watchdog_timeout_ms: int,
-    poll_s: float,
-    open_bus: Callable[[str], Bus] = _open_linux_bus,
-    clock: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-    wall: Callable[[], float] = time.time,
-) -> Iterator[tuple[list[RlhtSlice], list[Result | Event]]]:
-    """Open each RLHT's bus and start each slice.
-
-    Slices on the same bus path share one bus. Yield every slice that
-    answered as an RLHT, so stop-all covers it whether or not its start-up
-    finished (``started`` says which to poll), with the start-up events and
-    problems. The buses close on exit, so send stop-all before that.
-    """
-    buses: dict[str, Bus] = {}
-    slices: list[RlhtSlice] = []
-    reports: list[Result | Event] = []
-    try:
-        for d in devices:
-            if d.kind != "rlht":
-                continue
-            try:
-                if d.bus not in buses:
-                    buses[d.bus] = open_bus(d.bus)
-                rlht = RlhtSlice(
-                    d,
-                    CrumbsPort(buses[d.bus], d.address, sleep=sleep),
-                    watchdog_timeout_ms=watchdog_timeout_ms,
-                    poll_s=poll_s,
-                    clock=clock,
-                    sleep=sleep,
-                    wall=wall,
-                )
-                try:
-                    reports += rlht.start()
-                finally:
-                    if rlht.identified:
-                        slices.append(rlht)
-            except (SliceError, CrumbsError, OSError, ValueError) as e:
-                reports.append(Result(d.name, Outcome.ERROR, detail=_describe(e)))
-        yield slices, reports
-    finally:
-        for bus in buses.values():
-            close = getattr(bus, "close", None)
-            if close is not None:
-                close()

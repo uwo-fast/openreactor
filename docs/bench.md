@@ -18,14 +18,18 @@ the openreactor and library versions, and the firmware commit on each slice.
 | A run recorded and exported from the CLI and the API | 2026-10-13 | 2.0.0a1 (1018584) | as above | Slice_RLHT 4383bd9 | Pass. CLI: a 28 s run ended `stopped` on Ctrl-C with a stop-all event; `export` wrote `readings.csv` (129 rows), `events.csv` and `run.json`. API: a 45 s run ended `stopped`, and its export held 204 readings (on ade88dc, a 93 s run held 524) |
 | The API from another machine on the lab network, signed in | 2026-10-12 | 2.0.0a1 (ade88dc) | as above | Slice_RLHT 4383bd9 | Pass: a wrong password was refused (401). Signed in, the UI set a setpoint and ran Stop all |
 | The controller lock refuses a second command | 2026-10-13 | 2.0.0a1 (1018584) | as above | | Pass: `read` while `serve` ran exited 1, naming the holder's host, pid and command. The `sudo` half of the check was not run |
+| DCMT started safe and armed, version and caps as expected | | | | | |
+| DCMT duty from the UI and the API, each motor and each direction, and 0 brakes it | | | | | |
+| DCMT stop-all from the UI, the API and Ctrl-C brakes both motors at once | | | | | |
+| DCMT e-stop pressed and released resumes nothing | | | | | |
+| DCMT watchdog trip held when the process is killed, and cleared only on request | | | | | |
+| DCMT reboot: motors stay stopped and the watchdog is armed again | | | | | |
 | A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | Waits on #28 |
 
 ## Before you start
 
 Prepare the Pi and install openreactor as [install.md](install.md)
-describes, with a configuration that lists the rig's devices. openreactor
-does not drive DCMT slices until
-[#25](https://github.com/uwo-fast/openreactor/issues/25).
+describes, with a configuration that lists the rig's devices.
 
 ## How to run the controller lock check
 
@@ -94,6 +98,41 @@ DO firmware V2.13 or later; record each circuit's firmware (`i`) in the row.
    From another machine, `curl http://<pi>:8080/api/v1/status` answers 401,
    and with `-H 'Authorization: Bearer <password>'` it answers. Without the
    hash, `serve` refuses to bind `0.0.0.0`.
+
+## How to run the DCMT checks
+
+With a DCMT slice in the config and `openreactor serve` going. Use a motor
+that can spin freely, or a stirrer in water. `openreactor status` and
+`/api/v1/status` under `dcmt_slices` show each motor's duty and brake. To
+run motor 1, set its duty:
+
+```sh
+curl -s -X PUT localhost:8080/api/v1/channels/stirrer/setpoint \
+  -H 'Content-Type: application/json' -d '{"value": 40}'
+```
+
+1. **Start-up:** the `slice-start` event names the DCMT version, caps
+   `0x00000077` on a gen1 Nano, and `watchdog armed at <timeout> ms`. Both
+   motors are braked.
+2. **Duty:** 40, -40 and 0 on each motor, from the API and the Controls page.
+   The motor runs, reverses, then brakes; status shows the duty and the
+   brake. Setting one motor never changes the other.
+3. **Stop-all:** with both motors running, Stop all, the API's stop-all,
+   and Ctrl-C on `serve`. Both brake at once.
+4. **E-stop:** with a motor running, press the slice's e-stop: an `e-stop`
+   `held` event and stop-all. Release it: `released`, and the motor stays
+   stopped. On a rig whose e-stop cuts the backplane's power, release gives
+   a `slice-reboot` event instead, and the motor stays stopped.
+5. **Trip:** with a motor running, `kill -9` the server. The motor brakes
+   within `watchdog_timeout_ms`. Start `serve` again: the `slice-start`
+   event says a watchdog trip is held, duties are refused with 409, and the
+   Devices page shows Clear trip. Clear it: the motors stay braked until a
+   duty is set.
+6. **Reboot:** power-cycle the DCMT alone while a motor runs. A
+   `slice-reboot` event with result `re-asserted`, the motors stay stopped,
+   and status shows the watchdog armed.
+7. **Clean shutdown:** stop `serve` with Ctrl-C, then wait longer than the
+   watchdog timeout and start it again. No trip is held.
 
 ## How to run the RLHT checks
 

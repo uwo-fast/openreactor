@@ -413,7 +413,9 @@ class Controller:
     def close(self, timeout_s: float = 5.0) -> list[Event]:
         """Send stop-all and stop ticking.
 
-        Call it before the bus is closed. A second call does nothing.
+        Call it before the bus is closed. A second call does nothing. Raise
+        TimeoutError if stop-all does not report back, or the thread does
+        not stop, within ``timeout_s`` each.
         """
         if self._closed:
             return []
@@ -424,7 +426,10 @@ class Controller:
         future: Future[list[Event]] = Future()
         self._commands.put(lambda: future.set_result(self._shutdown()))
         try:
-            return future.result(timeout=timeout_s)
+            events = future.result(timeout=timeout_s)
         finally:
             self._stop.set()
             self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            raise TimeoutError("the controller's thread did not stop")
+        return events

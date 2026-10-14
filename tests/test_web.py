@@ -48,6 +48,7 @@ def test_status_lists_the_devices(open_bench):
     assert body["run"] is None
     assert body["devices"] == [
         {"name": "heater", "kind": "rlht", "status": "ok"},
+        {"name": "motors", "kind": "dcmt", "status": "ok"},
         {"name": "air", "kind": "ezo-hum", "status": "ok"},
     ]
 
@@ -76,7 +77,7 @@ def test_a_cross_site_post_is_refused(open_bench):
 
 def test_channels_show_the_latest_reading(open_bench):
     _, client = open_bench
-    until(lambda: len(client.get("/api/v1/channels").json()) == 5)
+    until(lambda: len(client.get("/api/v1/channels").json()) == 6)
     channels = {c["name"]: c for c in client.get("/api/v1/channels").json()}
     assert channels["air.humidity"]["value"] == 41.0
     assert channels["air.humidity"]["unit"] == "%"
@@ -95,6 +96,7 @@ def test_stop_all_returns_its_events(open_bench):
     assert [(e["kind"], e["device"], e["result"]) for e in events] == [
         ("stop-all", "jacket", "ok"),
         ("stop-all", "heater", "ok"),
+        ("stop-all", "motors", "ok"),
     ]
     assert bench.log == ["safe jacket"]
 
@@ -119,6 +121,181 @@ def test_a_setpoint_reaches_the_slice_and_is_recorded(open_bench):
     with zipfile.ZipFile(io.BytesIO(export.content)) as z:
         events = z.read("events.csv").decode()
     assert "setpoint" in events and "37.1 °C" in events and "jacket" in events
+
+
+# DCMT motors
+
+
+def stirrer_duty(client: TestClient) -> float | None:
+    for c in client.get("/api/v1/channels").json():
+        if c["name"] == "stirrer.duty":
+            return c["value"]
+    return None
+
+
+def test_a_motor_duty_reaches_the_slice_and_is_recorded(open_bench):
+    bench, client = open_bench
+    client.post("/api/v1/runs", json={"name": "stir"})
+    r = client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+    assert r.status_code == 204
+    assert (bench.dcmt.pwm, bench.dcmt.brakes) == ([128, 0], [0, 1])
+    until(lambda: stirrer_duty(client) == 50.2)
+    run = client.post("/api/v1/runs/current/stop").json()["id"]
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/api/v1/runs/{run}/export").content)) as z:
+        events = z.read("events.csv").decode()
+        readings = z.read("readings.csv").decode()
+    assert "setpoint,motors,stirrer,50.2 %,ok" in events
+    assert ",stirrer.duty,50.2,%" in readings
+
+
+@pytest.mark.parametrize("value", [100.5, -101, True, "50"])
+def test_a_motor_duty_outside_minus_100_to_100_is_refused(open_bench, value):
+    bench, client = open_bench
+    r = client.put("/api/v1/channels/stirrer/setpoint", json={"value": value})
+    assert r.status_code == 422
+    assert bench.dcmt.pwm == [0, 0]
+
+
+def test_a_reverse_duty_and_zero_brake_the_right_motor(open_bench):
+    bench, client = open_bench
+    assert client.put("/api/v1/channels/stirrer/setpoint", json={"value": -100}).status_code == 204
+    assert bench.dcmt.pwm == [-255, 0]
+    assert client.put("/api/v1/channels/stirrer/setpoint", json={"value": 0}).status_code == 204
+    assert (bench.dcmt.pwm, bench.dcmt.brakes) == ([0, 0], [1, 1])
+
+
+def test_status_shows_each_dcmt_slice(open_bench):
+    bench, client = open_bench
+    client.put("/api/v1/channels/stirrer/setpoint", json={"value": 100})
+    until(
+        lambda: (
+            client.get("/api/v1/status").json()["dcmt_slices"][0]["motors"][0]["duty_pct"] == 100.0
+        )
+    )
+    [s] = client.get("/api/v1/status").json()["dcmt_slices"]
+    assert (s["name"], s["address"], s["state"], s["mode"]) == ("motors", 20, "ok", "open loop")
+    assert s["watchdog"] == {"armed": True, "timeout_ms": 5000, "tripped": False, "trip_count": 0}
+    assert s["motors"] == [
+        {"motor": 1, "channel": "stirrer", "duty_pct": 100.0, "brake": False},
+        {"motor": 2, "channel": None, "duty_pct": 0.0, "brake": True},
+    ]
+    assert s["desired_pct"] == [100.0, 0.0]
+
+
+def held(client: TestClient) -> bool:
+    devices = {d["name"]: d["status"] for d in client.get("/api/v1/status").json()["devices"]}
+    return devices["motors"] == "watchdog trip held: clear it to drive the motors"
+
+
+def test_a_held_trip_is_cleared_only_when_asked_and_resumes_nothing(open_bench):
+    bench, client = open_bench
+    client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+    bench.dcmt.trip()
+    until(lambda: held(client))
+    r = client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+    assert r.status_code == 409 and "clear it first" in r.json()["detail"]
+    assert bench.dcmt.tripped == 1
+    r = client.post("/api/v1/devices/motors/clear-trip")
+    assert r.status_code == 200
+    [event] = r.json()
+    assert (event["kind"], event["source"], event["device"]) == (
+        "slice-trip-cleared",
+        "user",
+        "motors",
+    )
+    assert (bench.dcmt.tripped, bench.dcmt.pwm, bench.dcmt.brakes) == (0, [0, 0], [1, 1])
+    until(lambda: not held(client))
+    assert client.put("/api/v1/channels/stirrer/setpoint", json={"value": 20}).status_code == 204
+
+
+def test_clear_trip_is_refused_with_nothing_held_or_on_another_device(open_bench):
+    bench, client = open_bench
+    r = client.post("/api/v1/devices/motors/clear-trip")
+    assert r.status_code == 409 and "no watchdog trip is held" in r.json()["detail"]
+    for device in ("heater", "air", "nothing"):
+        assert client.post(f"/api/v1/devices/{device}/clear-trip").status_code == 404
+    assert bench.dcmt.commands[-1][0] != 0x7C
+
+
+def test_a_duty_is_refused_through_the_api_while_the_e_stop_is_held(open_bench):
+    bench, client = open_bench
+    bench.dcmt.press_estop()
+    until(lambda: client.get("/api/v1/status").json()["dcmt_slices"][0]["estop"])
+    r = client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+    assert r.status_code == 409 and "e-stop" in r.json()["detail"]
+    assert bench.dcmt.pwm == [0, 0]
+
+
+def test_clear_trip_answers_502_when_the_send_fails(open_bench):
+    bench, client = open_bench
+    bench.dcmt.trip()
+    until(lambda: held(client))
+    bench.dcmt.fail_opcodes[0x7C] = OSError(5, "I/O error")
+    r = client.post("/api/v1/devices/motors/clear-trip")
+    assert r.status_code == 502 and "may or may not be cleared" in r.json()["detail"]
+    assert bench.dcmt.tripped == 1
+
+
+def test_clear_trip_answers_503_for_a_dcmt_that_did_not_start(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.dcmt.caps = 0x74  # no open loop or brakes: refused at start-up
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        r = client.post("/api/v1/devices/motors/clear-trip")
+        assert r.status_code == 503 and "did not finish start-up" in r.json()["detail"]
+        [s] = client.get("/api/v1/status").json()["dcmt_slices"]
+        assert "lack open-loop control or brakes" in s["state"]
+        assert s["desired_pct"] is None
+
+
+def test_a_cross_site_clear_trip_is_refused(open_bench):
+    bench, client = open_bench
+    bench.dcmt.trip()
+    until(lambda: held(client))
+    evil = {"Origin": "http://evil.example"}
+    assert client.post("/api/v1/devices/motors/clear-trip", headers=evil).status_code == 403
+    hx = {"HX-Request": "true", **evil}
+    assert client.post("/ui/devices/motors/clear-trip", headers=hx).status_code == 403
+    assert bench.dcmt.tripped == 1
+
+
+def test_no_release_when_the_controller_does_not_stop_in_time(tmp_path: Path):
+    """A controller still running could drive a motor after its watchdog
+    was disarmed: leave the watchdog armed, to trip and brake it."""
+    bench = Bench(tmp_path, password=False)
+    with pytest.raises(TimeoutError), TestClient(bench.app, base_url=LOCAL):
+        svc = bench.app.state.service
+        close = svc.controller.close
+
+        def stuck() -> None:
+            close()  # stop it for real, then report the timeout
+            raise TimeoutError("the controller did not stop in time")
+
+        svc.controller.close = stuck
+    assert bench.dcmt.armed == 1
+    assert (0x7E, b"\x00\x00") not in bench.dcmt.commands
+
+
+def test_the_dcmt_is_released_even_if_ending_the_run_fails(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    with pytest.raises(sqlite3.OperationalError), TestClient(bench.app, base_url=LOCAL) as client:
+        client.post("/api/v1/runs", json={"name": "r"})
+        store = bench.app.state.service._store
+
+        def fail(run: int, status: str) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+        store.end_run = fail
+    assert (bench.dcmt.armed, bench.dcmt.brakes) == (0, [1, 1])
+
+
+def test_a_clean_shutdown_releases_the_dcmt(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+        assert bench.dcmt.armed == 1
+    # Stop-all, then the safe state and the watchdog disarmed, so a latching
+    # slice is not left to trip once nothing polls it.
+    assert (bench.dcmt.pwm, bench.dcmt.brakes, bench.dcmt.armed) == ([0, 0], [1, 1], 0)
 
 
 def test_a_setpoint_is_checked_before_it_is_sent(open_bench):
@@ -459,7 +636,11 @@ def test_calibrating_a_device_that_failed_at_startup_says_why(tmp_path: Path):
         assert r.status_code == 409
         assert r.json()["detail"].startswith("air is out of use since startup")
         status = client.get("/api/v1/status").json()
-        assert status["devices"][1]["status"] != "ok"
+        assert status["devices"][2] == {
+            "name": "air",
+            "kind": "ezo-hum",
+            "status": "error: cannot open /dev/i2c-1 at 0x6F: no reply",
+        }
 
 
 # Abuse from the network: none of it may delay or block stop-all
@@ -825,4 +1006,4 @@ def test_status_survives_a_busy_controller(open_bench, monkeypatch: pytest.Monke
     assert r.status_code == 200
     [s] = r.json()["slices"]
     assert s["state"] == "unknown: the controller did not answer in time"
-    assert {d["name"] for d in r.json()["devices"]} == {"heater", "air"}
+    assert {d["name"] for d in r.json()["devices"]} == {"heater", "motors", "air"}

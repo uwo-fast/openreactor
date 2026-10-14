@@ -2,7 +2,8 @@
 {% block title %}Controls · openreactor{% endblock %}
 {% block content %}
 <h1 class="h4">Controls</h1>
-<p>Stop all, in the bar above, puts every output in its safe state at once.</p>
+<p>Stop all, in the bar above, puts every output in its safe state at once.
+A motor's setpoint is its duty, from -100 to 100 %; 0 brakes it.</p>
 {% if channels %}
 <div class="table-responsive"><table class="table align-middle">
   <thead><tr><th>Channel</th><th>Device</th><th>Setpoint</th></tr></thead>
@@ -21,7 +22,13 @@
           <button class="btn btn-sm btn-primary">Set</button>
         </form>
         {% else %}
-        <span class="text-body-secondary">DCMT slices are not supported yet</span>
+        <form class="d-flex gap-2" hx-post="/ui/channels/{{ c.name }}/setpoint" hx-target="#notice">
+          <div class="input-group input-group-sm">
+            <input class="form-control setpoint" name="value" type="number" min="-100" max="100" step="any" required aria-label="Duty for {{ c.name }} in percent, -100 to 100; 0 brakes it">
+            <span class="input-group-text">%</span>
+          </div>
+          <button class="btn btn-sm btn-primary">Set</button>
+        </form>
         {% endif %}
       </td>
     </tr>
