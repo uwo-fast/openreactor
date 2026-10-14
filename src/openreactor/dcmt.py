@@ -293,6 +293,14 @@ class DcmtSlice:
             finally:
                 self.port.send(DCMT_OP_SET_OPEN_LOOP, dcmt_send_set_open_loop(0, 0))
 
+    def forget(self, motor: int) -> None:
+        """Set one motor's desired PWM to 0 without sending it.
+
+        For when sending 0 failed or was refused: the next poll then finds
+        the slice running another PWM than wanted, and stops it.
+        """
+        self.pwm[motor - 1] = 0
+
     def release(self) -> None:
         """Send the safe state, then disarm the watchdog, at a clean shutdown.
 

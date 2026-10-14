@@ -27,7 +27,14 @@ from crumbs_i2c import Bus, LinuxBus
 
 from openreactor import __version__
 from openreactor.auth import hash_password
-from openreactor.config import SLICE_KINDS, Config, ConfigError, DeviceConfig, load_config
+from openreactor.config import (
+    SLICE_KINDS,
+    Config,
+    ConfigError,
+    DeviceConfig,
+    load_config,
+    setpoint_range,
+)
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.ezo import (
     FAMILIES,
@@ -148,13 +155,15 @@ def check_config(args: argparse.Namespace) -> int:
 
 def _profile_validate(args: argparse.Namespace) -> int:
     channels = None
+    limits = None
     if args.config is not None:
         config = _load(args.config)
         if config is None:
             return 1
         channels = {ch.name for d in config.devices for ch in d.channels}
+        limits = {ch.name: setpoint_range(d.kind, ch) for d in config.devices for ch in d.channels}
     try:
-        profile = load_profile(args.profile, channels)
+        profile = load_profile(args.profile, channels, limits)
     except ProfileError as e:
         for problem in e.problems:
             print(f"{args.profile}: {problem}", file=sys.stderr)

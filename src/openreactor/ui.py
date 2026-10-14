@@ -27,6 +27,7 @@ from openreactor.config import SLICE_KINDS
 from openreactor.dcmt import duty_to_pwm, pwm_to_duty
 from openreactor.errors import HANDLED, error_detail, error_status
 from openreactor.ezo import FAMILIES
+from openreactor.profile import clock as profile_clock
 from openreactor.security import NoFraming, authorize
 from openreactor.service import Service, setpoint_limit
 
@@ -37,6 +38,7 @@ templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.filters["utc"] = lambda t: datetime.fromtimestamp(t, UTC).strftime(
     "%Y-%m-%d %H:%M:%S"
 )
+templates.env.filters["clock"] = profile_clock
 
 
 class SignInFirst(Exception):
@@ -183,12 +185,17 @@ def runs_partial(request: Request) -> HTMLResponse:
         runs = list(reversed(svc.runs()))
     except HANDLED as exc:
         return _error_notice(request, exc)
+    try:
+        profile = svc.profile()
+    except HANDLED as exc:
+        return _error_notice(request, exc)
     return _render(
         request,
         "_runs.html",
         run=svc.current_run(),
         recording_failed=svc.recording_failed(),
         runs=runs,
+        profile=profile,
     )
 
 
@@ -218,6 +225,30 @@ async def start_run(request: Request) -> HTMLResponse:
         return _notice(request, "A run needs a name.", ok=False, status_code=422)
     svc = _service(request)
     return await _act(request, lambda: f"Run {svc.start_run(name, notes)} is recording.")
+
+
+@actions.post("/profile", response_class=HTMLResponse)
+async def start_profile(request: Request) -> HTMLResponse:
+    form = await _form(request)
+    text = form.get("profile", "")
+    if not text.strip():
+        return _notice(request, "Paste a profile first.", ok=False, status_code=422)
+    name, notes = form.get("name", "").strip(), form.get("notes", "")
+    svc = _service(request)
+    return await _act(
+        request, lambda: f"Run {svc.start_profile(text, name, notes)} is running the profile."
+    )
+
+
+@actions.post("/profile/abort", response_class=HTMLResponse)
+async def abort_profile(request: Request) -> HTMLResponse:
+    svc = _service(request)
+
+    def work() -> str:
+        run, status = svc.abort_profile()
+        return f"Profile aborted; its channels were sent their safe state. Run {run} {status}."
+
+    return await _act(request, work)
 
 
 @actions.post("/runs/stop", response_class=HTMLResponse)

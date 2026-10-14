@@ -111,13 +111,12 @@ Each channel has a list of steps, which run in order from the start:
 | `{ off = true }` | Put the channel in its safe state. |
 
 Durations are a number and a unit, `s`, `m` or `h`, such as `"45s"`, `"2m"`
-or `"1.5h"`. The format specifies that when a profile ends or is aborted,
-every channel in it goes to its safe state; openreactor cannot run a
-profile yet.
+or `"1.5h"`. An RLHT channel's values are °C, and a DCMT motor's are its
+duty in %.
 [examples/profiles/ramp-and-hold.toml](../examples/profiles/ramp-and-hold.toml)
 uses every step.
 
-openreactor cannot run a profile yet. It can check one:
+Check a profile before you run it:
 
 ```sh
 openreactor profile validate -c ~/openreactor.toml --dry-run examples/profiles/ramp-and-hold.toml
@@ -125,7 +124,28 @@ openreactor profile validate -c ~/openreactor.toml --dry-run examples/profiles/r
 
 `profile validate` names each problem's place in the file and how to fix it.
 With `-c`, it also checks that the profile's channels exist in that
-configuration. With `--dry-run`, it prints what happens when.
+configuration and that each value is in the channel's range. With
+`--dry-run`, it prints what happens when.
+
+`openreactor serve` runs a profile, from the Runs page or the API
+([web.md](web.md#profiles)). Running one starts a run named after it, with
+the profile's text kept in the run. At each `slice_poll_s` openreactor works
+out each channel's value and sends the ones that changed.
+
+- **At the end**, every channel the profile set goes to its safe state, and
+  the run ends `completed`.
+- **Abort** it from the Runs page or the API, or stop its run: every channel
+  it set goes to its safe state, and the run ends `stopped`.
+- **Stop-all, an e-stop, a reboot, a slice going unreachable, or anything
+  else that stops or changes a channel the profile drives** aborts it the
+  same way, even before the profile has set that channel. A profile never
+  restarts a heater or a motor that something else stopped. A channel that
+  cannot take its safe state at once is left for its slice's checks to stop.
+- A send that fails once, or finds the slice being checked, is tried again
+  at the next step.
+- While a profile drives a channel, a setpoint for it by hand is refused.
+- When openreactor stops, the profile's run ends `interrupted`, and the
+  profile does not resume when it starts again.
 
 ## EZO calibration
 

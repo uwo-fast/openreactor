@@ -23,7 +23,7 @@ If any slice fails to go safe, the page names it.
 |---|---|---|
 | Dashboard | `/` | Live values, a chart of the values since the page opened, each device's status, and the current run. |
 | Controls | `/controls` | A setpoint form for each RLHT channel, and a duty form for each DCMT motor. |
-| Runs | `/runs` | Start and stop a run, and export the recorded runs. |
+| Runs | `/runs` | Start and stop a run, run and abort a profile, and export the recorded runs. |
 | Devices | `/devices` | Each device's status, EZO calibration, and Clear trip for a DCMT whose watchdog trip is held. |
 | About | `/about` | The version, the licence, and the included browser libraries. |
 
@@ -45,7 +45,10 @@ sign-in as the UI. The OpenAPI description is at `/api/v1/openapi.json`.
 | `POST` | `/stop-all` | Send stop-all, and return one event per slice. |
 | `GET` | `/runs` | List the recorded runs. |
 | `POST` | `/runs` | Start a run. The body is `{"name": "...", "notes": "..."}`; `notes` is optional. Answers 201 with the run's `id`. |
-| `POST` | `/runs/current/stop` | Stop the recording run. Answers with its `id` and `status`. |
+| `POST` | `/runs/current/stop` | Stop the recording run, aborting a profile that drives it. Answers with its `id` and `status`. |
+| `POST` | `/profile` | Run a profile. The body is `{"profile": "<TOML text>", "name": "...", "notes": "..."}`; `name` and `notes` are optional. Answers 201 with the new run's `id`. |
+| `GET` | `/profile` | The running profile: its `run`, `name`, `elapsed_s` and `duration_s`, or `null`. |
+| `POST` | `/profile/abort` | Abort the running profile. Answers with its run's `id` and `status`. |
 | `GET` | `/runs/{run}/export` | Download the run as `run-N.zip`. |
 | `GET` | `/ezo/{device}/calibration` | Show a circuit's calibration. |
 | `POST` | `/ezo/{device}/calibration` | Calibrate one point. The body is `{"point": "mid", "value": 7.0}`. |
@@ -84,6 +87,23 @@ A setpoint stays the one openreactor wants until one of these happens:
 After a plain watchdog trip, openreactor sends the setpoint again.
 [safety.md](safety.md) describes each case.
 
+## Profiles
+
+[usage.md](usage.md#run-profiles) describes the profile format and how a
+profile runs. `POST /api/v1/profile` answers 422 with every problem the
+validator finds, including a value outside a channel's range, 409 while a
+run is recording or a slice it uses has its e-stop or a DCMT trip held, and
+503 when a slice the profile uses is not in use or is unreachable. A profile's TOML text can be up to 20,000 characters. For
+example:
+
+```sh
+python3 -c 'import json, sys; print(json.dumps({"profile": open(sys.argv[1]).read()}))' \
+  examples/profiles/ramp-and-hold.toml > profile.json
+curl -s -X POST localhost:8080/api/v1/profile \
+  -H 'Content-Type: application/json' --data @profile.json
+curl -s -X POST localhost:8080/api/v1/profile/abort
+```
+
 ## Motor duties
 
 A DCMT motor's setpoint is its duty, from -100 to 100 %: negative runs it in
@@ -109,6 +129,7 @@ A `PUT` to `/channels/{channel}/setpoint` answers with one of these:
 | 409 | The slice is read-only, because it has no command watchdog. |
 | 409 | The slice is running setpoints other than those wanted, or changed since it was last checked (a reboot, a trip or an e-stop no poll has seen yet), and openreactor is checking why. Try again a moment later. |
 | 409 | On a DCMT: a watchdog trip is held. |
+| 409 | A running profile drives the channel. Abort the profile first. |
 | 422 | The value is not a JSON number, is below 0, or is above the limit. For a motor, it is outside -100 to 100. |
 | 502 | Sending failed. The slice may still have applied it, so the next polls compare what it runs with what is wanted. |
 | 503 | The slice is unreachable, could not be read just before the send, did not finish start-up, or is not in use. |

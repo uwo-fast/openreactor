@@ -427,6 +427,16 @@ class RlhtSlice:
         finally:
             self.port.send(RLHT_OP_SET_OPEN_DUTY, rlht_send_set_open_duty(0, 0))
 
+    def forget(self, output: int) -> None:
+        """Set one output's desired setpoint to 0 without sending it.
+
+        For when sending 0 failed or was refused: the next poll then finds
+        the slice running another setpoint than wanted, and the check that
+        follows re-asserts 0 or sends the safe state. Nothing ever sends the
+        old setpoint again.
+        """
+        self.setpoints_deci[output - 1] = 0
+
     def status(self, why: str | None = None) -> SliceStatus:
         """Return the slice's status as of the last poll.
 

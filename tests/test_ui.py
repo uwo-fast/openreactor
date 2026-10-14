@@ -98,6 +98,30 @@ def test_start_a_run_stop_it_and_export_it(open_bench):
         assert "readings.csv" in z.namelist()
 
 
+def test_run_and_abort_a_profile_from_the_runs_page(open_bench):
+    bench, client = open_bench
+    assert 'hx-post="/ui/profile"' in client.get("/runs").text
+    text = 'version = 1\nname = "stir"\n[channels]\nstirrer = [{ set = 30.0 }, { hold = "1h" }]\n'
+    r = client.post("/ui/profile", data={"profile": text, "name": "", "notes": ""}, headers=HX)
+    assert r.status_code == 200 and "is running the profile" in r.text
+    until(lambda: bench.dcmt.pwm[0] != 0)
+    runs = client.get("/ui/runs", headers=HX).text
+    assert "Profile stir drives run 1" in runs and "of 1:00:00" in runs
+    assert 'hx-post="/ui/profile/abort"' in runs
+    r = client.post("/ui/profile/abort", headers=HX)
+    assert r.status_code == 200 and "Run 1 stopped." in r.text
+    assert bench.dcmt.pwm == [0, 0]
+    assert "drives run" not in client.get("/ui/runs", headers=HX).text
+
+
+def test_a_bad_profile_from_the_runs_page_says_what_is_wrong(open_bench):
+    _, client = open_bench
+    r = client.post("/ui/profile", data={"profile": "version = 2"}, headers=HX)
+    assert r.status_code == 422 and "version: must be 1" in r.text
+    r = client.post("/ui/profile", data={"profile": "  "}, headers=HX)
+    assert r.status_code == 422 and "Paste a profile first." in r.text
+
+
 def test_send_a_motor_duty(open_bench):
     bench, client = open_bench
     controls = client.get("/controls").text

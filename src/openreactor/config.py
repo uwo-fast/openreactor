@@ -50,8 +50,22 @@ PERIOD_MAX_MS = 10000
 # shorter poll period would not poll any faster.
 SLICE_POLL_MIN_S = 0.2
 
+# A DCMT motor's duty, in percent.
+DUTY_MAX_PCT = 100.0
+
 # The key that picks the hardware output for each slice channel.
 OUTPUT_KEY = {"rlht": "output", "dcmt": "motor"}
+
+
+def setpoint_range(kind: str, ch: ChannelConfig) -> tuple[float, float]:
+    """Return the lowest and highest setpoint a slice channel accepts.
+
+    An RLHT channel takes °C from 0 to its ``max_setpoint``, or to all the
+    slice can take; a DCMT motor takes a duty from -100 to 100 %.
+    """
+    if kind == "dcmt":
+        return -DUTY_MAX_PCT, DUTY_MAX_PCT
+    return 0.0, ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
 
 
 def _hex(n: int) -> str:

@@ -24,7 +24,8 @@ the openreactor and library versions, and the firmware commit on each slice.
 | DCMT e-stop pressed and released resumes nothing | | | | | |
 | DCMT watchdog trip held when the process is killed, and cleared only on request | | | | | |
 | DCMT reboot: motors stay stopped and the watchdog is armed again | | | | | |
-| A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | Waits on #28 |
+| A 30-minute ramp-and-hold profile matches its `--dry-run` timeline | | | | | |
+| A profile aborted by stop-all, an e-stop and a power-cut e-stop resumes nothing | | | | | |
 
 ## Before you start
 
