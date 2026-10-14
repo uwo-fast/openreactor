@@ -4,7 +4,7 @@
 
 version = 1
 name = "Ramp and hold"
-notes = "Warm the jacket to 37 °C over 30 minutes, hold for two hours."
+notes = "Warm the jacket to 37 °C over 30 minutes, hold for two hours, and stir."
 
 # Each channel's steps run in order from the start:
 #   { set = 30.0 }                   the value, at once
@@ -21,9 +21,10 @@ jacket = [
   { hold = "2h" },
   { off = true },
 ]
+# A motor's value is its duty, -100 to 100 %.
 stirrer = [
-  { set = 120 },
+  { set = 30.0 },
   { hold = "10m" },
-  { ramp = 300, over = "5m" },
+  { ramp = 60.0, over = "5m" },
   { hold = "135m" },
 ]

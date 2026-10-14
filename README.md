@@ -19,10 +19,9 @@ output on request.
 Version 2.0.0a1 is an alpha, and a rewrite that is not compatible with 1.x.
 It reads and calibrates EZO sensors, drives RLHT heater slices and DCMT
 motor slices (open loop) with their command watchdogs and stop-all, records
-and exports runs, and serves an HTTP API and a browser UI. It does not yet
-run profiles beyond validating them
-([#28](https://github.com/uwo-fast/openreactor/issues/28)), or ship a
-systemd unit ([#29](https://github.com/uwo-fast/openreactor/issues/29)).
+and exports runs, runs setpoint profiles, and serves an HTTP API and a
+browser UI. It does not yet ship a systemd unit
+([#29](https://github.com/uwo-fast/openreactor/issues/29)).
 [#17](https://github.com/uwo-fast/openreactor/issues/17) tracks 2.0.
 
 For a stable install, use

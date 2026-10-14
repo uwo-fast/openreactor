@@ -160,6 +160,21 @@ class RunStopped(BaseModel):
     status: str
 
 
+class ProfileStart(BaseModel):
+    # The profile's TOML text, as in examples/profiles/.
+    profile: str = Field(min_length=1, max_length=60_000)
+    # The run's name and notes; the profile's own when empty.
+    name: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=10_000)
+
+
+class ProfileOut(BaseModel):
+    run: int
+    name: str
+    elapsed_s: float
+    duration_s: float
+
+
 class Setpoint(BaseModel):
     # Strict: JSON true or "40" is not a temperature.
     value: float = Field(strict=True, allow_inf_nan=False)
@@ -272,6 +287,23 @@ def post_run(body: RunStart, svc: Svc) -> RunStarted:
 @api.post("/runs/current/stop")
 def post_run_stop(svc: Svc) -> RunStopped:
     run, status = svc.stop_run()
+    return RunStopped(id=run, status=status)
+
+
+@api.post("/profile", status_code=201)
+def post_profile(body: ProfileStart, svc: Svc) -> RunStarted:
+    return RunStarted(id=svc.start_profile(body.profile, body.name, body.notes))
+
+
+@api.get("/profile")
+def get_profile(svc: Svc) -> ProfileOut | None:
+    state = svc.profile()
+    return ProfileOut(**asdict(state)) if state is not None else None
+
+
+@api.post("/profile/abort")
+def post_profile_abort(svc: Svc) -> RunStopped:
+    run, status = svc.abort_profile()
     return RunStopped(id=run, status=status)
 
 

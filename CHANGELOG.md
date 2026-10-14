@@ -101,8 +101,14 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
 - `/api/v1/status` shows each DCMT under `dcmt_slices`, and
   `openreactor status` prints it.
 - Run profiles: a TOML schedule of `set`, `ramp`, `hold` and `off` steps per
-  channel. `openreactor profile validate` checks one, and `--dry-run` prints
-  its timeline. An example is in `examples/profiles/`.
+  channel. `openreactor profile validate` checks one, including each value
+  against its channel's range, and `--dry-run` prints its timeline. An
+  example is in `examples/profiles/`.
+- `serve` runs a profile in a run of its own, from the Runs page or
+  `POST /api/v1/profile`, and aborts it from either. When it ends or is
+  aborted, every channel it set goes safe. Stop-all, an e-stop, a reboot or
+  any other change to a channel it drives aborts it, and it never resumes
+  after a restart.
 
 ### Removed
 

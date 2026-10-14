@@ -298,6 +298,105 @@ def test_a_clean_shutdown_releases_the_dcmt(tmp_path: Path):
     assert (bench.dcmt.pwm, bench.dcmt.brakes, bench.dcmt.armed) == ([0, 0], [1, 1], 0)
 
 
+# Profiles
+
+PROFILE = """
+version = 1
+name = "warm and stir"
+[channels]
+jacket = [{ set = 30.0 }, { ramp = 35.0, over = "2s" }, { hold = "%s" }]
+stirrer = [{ set = 40.0 }, { hold = "%s" }]
+"""
+
+
+def run_status(client: TestClient, run: int) -> str:
+    return next(r["status"] for r in client.get("/api/v1/runs").json() if r["id"] == run)
+
+
+def test_a_profile_runs_to_its_end_in_its_own_run_and_ends_safe(open_bench):
+    bench, client = open_bench
+    r = client.post("/api/v1/profile", json={"profile": PROFILE % ("3s", "5s")})
+    assert r.status_code == 201
+    run = r.json()["id"]
+    until(lambda: bench.rlht.setpoints[0] > 0)
+    state = client.get("/api/v1/profile").json()
+    assert (state["run"], state["name"], state["duration_s"]) == (run, "warm and stir", 5.0)
+    until(lambda: run_status(client, run) == "completed")
+    assert client.get("/api/v1/profile").json() is None
+    assert bench.rlht.setpoints == [0, 0] and bench.dcmt.pwm == [0, 0]
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/api/v1/runs/{run}/export").content)) as z:
+        meta = json.loads(z.read("run.json"))
+        events = z.read("events.csv").decode()
+    assert meta["name"] == "warm and stir" and "ramp = 35.0" in meta["profile"]
+    assert "profile,setpoint,heater,jacket,30 °C,ok" in events
+    assert "profile-end" in events
+
+
+def test_an_aborted_profile_sends_its_channels_safe_and_stops_its_run(open_bench):
+    bench, client = open_bench
+    run = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")}).json()["id"]
+    until(lambda: bench.dcmt.pwm[0] != 0)
+    r = client.post("/api/v1/profile/abort")
+    assert r.json() == {"id": run, "status": "stopped"}
+    assert bench.rlht.setpoints == [0, 0] and bench.dcmt.pwm == [0, 0]
+    assert client.post("/api/v1/profile/abort").status_code == 409
+
+
+@pytest.mark.parametrize("how", ["stop-all", "stop the run"])
+def test_stop_all_or_stopping_the_run_aborts_the_profile(open_bench, how):
+    bench, client = open_bench
+    run = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")}).json()["id"]
+    until(lambda: bench.dcmt.pwm[0] != 0)
+    if how == "stop-all":
+        client.post("/api/v1/stop-all")
+    else:
+        assert client.post("/api/v1/runs/current/stop").json()["status"] == "stopped"
+    until(lambda: run_status(client, run) == "stopped")
+    assert client.get("/api/v1/profile").json() is None
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/api/v1/runs/{run}/export").content)) as z:
+        events = z.read("events.csv").decode()
+    reason = "stop-all was sent" if how == "stop-all" else "the run was stopped"
+    assert f"profile-abort,,,{reason},aborted" in events
+    time.sleep(0.3)  # several profile steps: nothing is sent again
+    assert bench.rlht.setpoints == [0, 0] and bench.dcmt.pwm == [0, 0]
+
+
+def test_a_bad_profile_is_refused_with_every_problem(open_bench):
+    _, client = open_bench
+    text = 'version = 1\nname = "x"\n[channels]\njacket = [{ set = 90.0 }, { hold = "1m" }]\n'
+    text += 'nothing = [{ set = 1.0 }, { hold = "1m" }]\n'
+    r = client.post("/api/v1/profile", json={"profile": text})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "channels.nothing: is not an actuated channel in the config" in detail
+    assert "channels.jacket[0]: 90 is outside what the channel takes, 0 to 80" in detail
+    assert client.get("/api/v1/runs").json() == []
+
+
+def test_a_profile_is_refused_while_a_run_records(open_bench):
+    _, client = open_bench
+    client.post("/api/v1/runs", json={"name": "manual"})
+    r = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+    assert r.status_code == 409 and "already recording" in r.json()["detail"]
+    client.post("/api/v1/runs/current/stop")
+    assert (
+        client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")}).status_code
+        == 201
+    )
+    r = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")})
+    assert r.status_code == 409  # a second profile, while the first one's run records
+
+
+def test_a_setpoint_by_hand_on_a_profiles_channel_is_refused(open_bench):
+    bench, client = open_bench
+    run = client.post("/api/v1/profile", json={"profile": PROFILE % ("60s", "60s")}).json()["id"]
+    until(lambda: bench.rlht.setpoints[0] > 0)
+    r = client.put("/api/v1/channels/jacket/setpoint", json={"value": 20})
+    assert r.status_code == 409 and "abort the profile first" in r.json()["detail"]
+    assert bench.rlht.setpoints[0] != 200
+    assert run_status(client, run) == "running"
+
+
 def test_a_setpoint_is_checked_before_it_is_sent(open_bench):
     bench, client = open_bench
 

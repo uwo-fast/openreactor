@@ -21,7 +21,7 @@ from typing import TypeVar
 
 from crumbs_i2c import Bus, LinuxBus
 
-from openreactor.config import SETPOINT_MAX_C, SLICE_KINDS, ChannelConfig, Config, DeviceConfig
+from openreactor.config import SLICE_KINDS, ChannelConfig, Config, DeviceConfig, setpoint_range
 from openreactor.controller import Actuator, Controller, Event
 from openreactor.dcmt import DcmtSlice, DcmtStatus, duty_to_pwm, pwm_to_duty
 from openreactor.ezo import (
@@ -39,7 +39,9 @@ from openreactor.ezo import (
     clear_calibration_steps,
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
+from openreactor.profile import ProfileError, profile_from_bytes
 from openreactor.rlht import SendFailed, SliceBusy, SliceError, SliceStatus
+from openreactor.runner import ProfileRunner
 from openreactor.slices import Slice, opened_slices, release
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
@@ -73,8 +75,8 @@ def _wait(future: Future[_T]) -> _T:
 
 
 def setpoint_limit(ch: ChannelConfig) -> float:
-    """Return the highest setpoint, in °C, that ``ch`` accepts."""
-    return ch.max_setpoint if ch.max_setpoint is not None else SETPOINT_MAX_C
+    """Return the highest setpoint, in °C, that an RLHT channel accepts."""
+    return setpoint_range("rlht", ch)[1]
 
 
 def _problem_text(p: Result) -> str:
@@ -82,10 +84,18 @@ def _problem_text(p: Result) -> str:
     return f"{p.outcome.value}: {p.detail}" if p.detail else p.outcome.value
 
 
-def _end_status(recorder: Recorder | None) -> str:
-    """Return how a run ends: "interrupted" if it stopped recording."""
+def _end_status(recorder: Recorder | None, ended: str = "stopped") -> str:
+    """Return how a run ends: ``ended``, or "interrupted" if it stopped recording."""
     failed = recorder.failed if recorder is not None else None
-    return "stopped" if failed is None else "interrupted"
+    return ended if failed is None else "interrupted"
+
+
+@dataclass(frozen=True)
+class ProfileState:
+    run: int
+    name: str
+    elapsed_s: float
+    duration_s: float
 
 
 class NotFound(Exception):
@@ -156,6 +166,8 @@ class Service:
         self._store: Store | None = None
         self._recorder: Recorder | None = None
         self._run: int | None = None
+        # The profile driving the current run, if one does.
+        self._runner: ProfileRunner | None = None
         self._ezo = {d.name: d for d in config.devices if d.kind in FAMILIES}
         # Where each published channel comes from: (device, kind).
         self._sources: dict[str, tuple[str, str]] = {
@@ -295,6 +307,11 @@ class Service:
         it again: an e-stop, a trip, a reboot or stop-all stops the motor
         until it is set again.
         """
+        runner = self._runner
+        if runner is not None and channel in runner.profile.channels:
+            raise Conflict(
+                f"profile {runner.profile.name!r} drives {channel}; abort the profile first"
+            )
         for d in self.config.devices:
             for ch in d.channels:
                 if ch.name == channel:
@@ -404,8 +421,12 @@ class Service:
 
     def stop_all(self) -> list[Event]:
         # Never cancelled: a stop-all that reports late has still been sent.
+        future = self.controller.stop_all("user")
+        # After it, so stop-all goes first: the profile's channels are then
+        # already at 0, and it ends without sending anything more.
+        self.controller.call(lambda: self._abort_profile("stop-all was sent"))
         try:
-            return self.controller.stop_all("user").result(timeout=ACTION_TIMEOUT_S)
+            return future.result(timeout=ACTION_TIMEOUT_S)
         except TimeoutError:
             raise TimeoutError("stop-all was queued but has not reported back") from None
 
@@ -419,41 +440,156 @@ class Service:
     # Runs
 
     def start_run(self, name: str, notes: str = "") -> int:
+        return _wait(self.controller.call(lambda: self._start_run(name, notes)))
+
+    def _start_run(self, name: str, notes: str, profile: str | None = None) -> int:
+        """Start recording a run; call it on the controller's thread."""
+        if self._run is not None:
+            failed = self.recording_failed()
+            if failed is not None:
+                raise Conflict(f"run {self._run} stopped recording ({failed}); stop it first")
+            raise Conflict(f"run {self._run} is already recording")
+        if self._store is None:
+            self._store = Store(self._database)
+        store = self._store
+        store.setup()
+        # The controller lock is held for the service's life, so a run still
+        # marked running was left by a process that died.
+        store.interrupt_stale_runs()
+        run = store.start_run(name, self._config_text, notes, profile)
+        self._recorder = Recorder(store, run, dict(self._sources), wall=self._wall)
+        store.recording()
+        self.controller.subscribe(self._recorder)
+        self._run = run
+        return run
+
+    def stop_run(self) -> tuple[int, str]:
+        """Stop the recording run; a profile driving it is aborted first."""
+
+        def stop() -> tuple[int, str]:
+            return self._abort_profile("the run was stopped") or self._end_run("stopped")
+
+        return _wait(self.controller.call(stop))
+
+    def _end_run(self, ended: str) -> tuple[int, str]:
+        """End the recording run; call it on the controller's thread."""
+        if self._run is None or self._store is None or self._recorder is None:
+            raise Conflict("no run is recording")
+        run, store, recorder = self._run, self._store, self._recorder
+        self.controller.unsubscribe(recorder)
+        status = _end_status(recorder, ended)
+        store.setup()
+        store.end_run(run, status)
+        self._run, self._recorder = None, None
+        return run, status
+
+    # Profiles
+
+    def start_profile(self, text: str, name: str = "", notes: str = "") -> int:
+        """Start a run that a profile drives, and return the run's id.
+
+        The profile is checked against the config's actuated channels and
+        their ranges; the run is named after the profile unless ``name`` is
+        given. It starts at once, and every channel it touched goes safe
+        when it ends or is aborted.
+        """
+        actuated = {
+            ch.name: (d, ch, self._slices.get(d.name))
+            for d in self.config.devices
+            if d.kind in SLICE_KINDS
+            for ch in d.channels
+        }
+        limits = {n: setpoint_range(d.kind, ch) for n, (d, ch, _) in actuated.items()}
+        try:
+            profile = profile_from_bytes(text.encode(), actuated, "profile", limits)
+        except ProfileError as e:
+            raise Invalid("; ".join(str(p) for p in e.problems)) from None
+        channels: dict[str, tuple[DeviceConfig, ChannelConfig, Slice]] = {}
+        for n in profile.channels:
+            d, ch, s = actuated[n]
+            if s is None or not s.started:
+                raise Unreachable(f"{n}: {d.name} is not in use")
+            channels[n] = (d, ch, s)
+
         def start() -> int:
-            if self._run is not None:
-                failed = self.recording_failed()
-                if failed is not None:
-                    raise Conflict(f"run {self._run} stopped recording ({failed}); stop it first")
-                raise Conflict(f"run {self._run} is already recording")
-            if self._store is None:
-                self._store = Store(self._database)
-            store = self._store
-            store.setup()
-            # The controller lock is held for the service's life, so a run
-            # still marked running was left by a process that died.
-            store.interrupt_stale_runs()
-            run = store.start_run(name, self._config_text, notes)
-            self._recorder = Recorder(store, run, dict(self._sources), wall=self._wall)
-            store.recording()
-            self.controller.subscribe(self._recorder)
-            self._run = run
+            # A running profile's run is recording, so this refuses a second.
+            run = self._start_run(name or profile.name, notes or profile.notes, text)
+            runner = ProfileRunner(
+                profile,
+                channels,
+                step_s=self.config.controller.slice_poll_s,
+                finished=self._profile_finished,
+                wall=self._wall,
+            )
+            self._runner = runner
+            self.controller.polled.append(runner)
+            self.controller.publish(
+                Event(self._wall(), "user", "profile-start", details=f"{profile.name!r}")
+            )
             return run
 
         return _wait(self.controller.call(start))
 
-    def stop_run(self) -> tuple[int, str]:
-        def stop() -> tuple[int, str]:
-            if self._run is None or self._store is None or self._recorder is None:
-                raise Conflict("no run is recording")
-            run, store, recorder = self._run, self._store, self._recorder
-            self.controller.unsubscribe(recorder)
-            status = _end_status(recorder)
-            store.setup()
-            store.end_run(run, status)
-            self._run, self._recorder = None, None
-            return run, status
+    def _profile_finished(self, ended: str, why: str) -> None:
+        """End the profile's run; the runner calls it on the controller's thread.
 
-        return _wait(self.controller.call(stop))
+        Its last events are published after it returns, so the run ends on
+        the next tick, with them recorded.
+        """
+        runner = self._runner
+
+        def end() -> None:
+            if runner is not None and self._runner is runner:
+                self._drop_profile(ended)
+
+        self.controller.call(end)
+
+    def _drop_profile(self, ended: str) -> tuple[int, str] | None:
+        """Take the runner off the controller and end its run."""
+        runner, self._runner = self._runner, None
+        if runner is not None and runner in self.controller.polled:
+            self.controller.polled.remove(runner)
+        return self._end_run(ended) if self._run is not None else None
+
+    def _abort_profile(self, why: str) -> tuple[int, str] | None:
+        """Abort a running profile and end its run, stopped.
+
+        Call it on the controller's thread. Every channel the profile
+        touched is sent its safe state first.
+        """
+        runner = self._runner
+        if runner is None:
+            return None
+        for item in runner.abort(why):
+            self.controller.publish(item)
+        return self._drop_profile("stopped")
+
+    def abort_profile(self) -> tuple[int, str]:
+        """Abort the running profile and end its run, stopped."""
+
+        def abort() -> tuple[int, str]:
+            ended = self._abort_profile("aborted by the operator")
+            if ended is None:
+                raise Conflict("no profile is running")
+            return ended
+
+        return _wait(self.controller.call(abort))
+
+    def profile(self) -> ProfileState | None:
+        """Return the running profile, if any."""
+
+        def state() -> ProfileState | None:
+            runner = self._runner
+            if runner is None or self._run is None:
+                return None
+            return ProfileState(
+                self._run,
+                runner.profile.name,
+                round(runner.elapsed(self.controller.now()), 1),
+                runner.profile.duration,
+            )
+
+        return _wait(self.controller.call(state))
 
     def runs(self) -> list[Run]:
         if not self._database.exists():

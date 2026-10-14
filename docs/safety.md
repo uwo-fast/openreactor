@@ -133,6 +133,15 @@ another controller on the bus. In each, nothing resumes until you set a
 setpoint again. While openreactor checks the watchdog, it refuses new
 setpoints for that slice with 409.
 
+## Profiles
+
+A running profile sends setpoints like an operator does, through the same
+checks. It never overrides anything else: if a channel it drives no longer
+runs what it last sent, because of stop-all, an e-stop, a reboot, a drift
+the slice was stopped for, or a slice that cannot be used, the profile is
+aborted. When it ends or is aborted, every channel it set is sent its safe
+state. After openreactor restarts, a profile does not resume.
+
 ## DCMT motor slices
 
 openreactor drives each DCMT motor open loop. The rules differ from the

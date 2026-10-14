@@ -124,6 +124,10 @@ class Controller:
 
     # Called from any thread
 
+    def now(self) -> float:
+        """Return the controller's clock, as ticks and polled devices see it."""
+        return self._clock()
+
     def subscribe(self, listener: Listener) -> None:
         self._commands.put(lambda: self._listeners.append(listener))
 

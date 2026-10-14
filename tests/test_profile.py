@@ -287,14 +287,56 @@ def test_the_timeline_of_the_example():
     assert timeline(load_profile(EXAMPLE)) == [
         "  0:00:00  jacket   set 30",
         "  0:00:00  jacket   ramp 30 to 37 over 0:30:00",
-        "  0:00:00  stirrer  set 120",
-        "  0:00:00  stirrer  hold 120 for 0:10:00",
-        "  0:10:00  stirrer  ramp 120 to 300 over 0:05:00",
-        "  0:15:00  stirrer  hold 300 for 2:15:00",
+        "  0:00:00  stirrer  set 30",
+        "  0:00:00  stirrer  hold 30 for 0:10:00",
+        "  0:10:00  stirrer  ramp 30 to 60 over 0:05:00",
+        "  0:15:00  stirrer  hold 60 for 2:15:00",
         "  0:30:00  jacket   hold 37 for 2:00:00",
         "  2:30:00  jacket   off",
         "  2:30:00  end: jacket, stirrer go safe",
     ]
+
+
+def limits(**ranges: tuple[float, float]) -> dict[str, tuple[float, float]]:
+    return ranges
+
+
+def test_a_value_outside_a_channels_range_is_refused():
+    data = {
+        "version": 1,
+        "name": "x",
+        "channels": {
+            "jacket": [{"set": 30.0}, {"ramp": 90.0, "over": "1m"}],
+            "stirrer": [{"set": -120.0}, {"hold": "1m"}],
+        },
+    }
+    with pytest.raises(ProfileError) as e:
+        parse_profile(data, limits=limits(jacket=(0.0, 80.0), stirrer=(-100.0, 100.0)))
+    assert [str(p) for p in e.value.problems] == [
+        "channels.jacket[1]: 90 is outside what the channel takes, 0 to 80 "
+        "(the channel's range comes from the config)",
+        "channels.stirrer[0]: -120 is outside what the channel takes, -100 to 100 "
+        "(the channel's range comes from the config)",
+    ]
+
+
+def test_a_value_at_the_ends_of_a_range_is_accepted():
+    data = {
+        "version": 1,
+        "name": "x",
+        "channels": {"stirrer": [{"set": -100.0}, {"ramp": 100.0, "over": "1m"}]},
+    }
+    assert parse_profile(data, limits=limits(stirrer=(-100.0, 100.0))).duration == 60.0
+
+
+def test_validate_checks_values_against_the_config(tmp_path, capsys):
+    config = str(EXAMPLES / "openreactor.toml")
+    path = tmp_path / "p.toml"
+    path.write_text(
+        'version = 1\nname = "x"\n[channels]\nstirrer = [{ set = 300 }, { hold = "1m" }]\n'
+    )
+    assert cli.main(["profile", "validate", "-c", config, str(path)]) == 1
+    assert "300 is outside what the channel takes, -100 to 100" in capsys.readouterr().err
 
 
 # openreactor profile validate

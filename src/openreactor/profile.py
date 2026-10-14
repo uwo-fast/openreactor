@@ -31,7 +31,7 @@ import bisect
 import math
 import re
 import tomllib
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -107,17 +107,26 @@ class ProfileError(Exception):
         super().__init__("\n".join(str(p) for p in problems))
 
 
-def load_profile(path: str | Path, channels: Collection[str] | None = None) -> Profile:
+Limits = Mapping[str, tuple[float, float]]
+
+
+def load_profile(
+    path: str | Path, channels: Collection[str] | None = None, limits: Limits | None = None
+) -> Profile:
     """Read and validate a profile file, raising ProfileError with every problem.
 
-    ``channels``, if given, are the actuated channels it may use.
+    ``channels``, if given, are the actuated channels it may use, and
+    ``limits`` the lowest and highest value each one takes.
     """
     with open(path, "rb") as f:
-        return profile_from_bytes(f.read(), channels, str(path))
+        return profile_from_bytes(f.read(), channels, str(path), limits)
 
 
 def profile_from_bytes(
-    data: bytes, channels: Collection[str] | None = None, source: str = "profile"
+    data: bytes,
+    channels: Collection[str] | None = None,
+    source: str = "profile",
+    limits: Limits | None = None,
 ) -> Profile:
     """Validate a profile's text; ``source`` names it in a parse error."""
     try:
@@ -126,10 +135,12 @@ def profile_from_bytes(
         raise ProfileError([Problem(source, f"not valid UTF-8: {e.reason}")]) from e
     except tomllib.TOMLDecodeError as e:
         raise ProfileError([Problem(source, f"not valid TOML: {e}")]) from e
-    return parse_profile(parsed, channels)
+    return parse_profile(parsed, channels, limits)
 
 
-def parse_profile(data: Any, channels: Collection[str] | None = None) -> Profile:
+def parse_profile(
+    data: Any, channels: Collection[str] | None = None, limits: Limits | None = None
+) -> Profile:
     """Validate a profile already parsed into Python values."""
     if not isinstance(data, dict):
         raise ProfileError([Problem("profile", "must be a table", "start with version = 1")])
@@ -186,6 +197,8 @@ def parse_profile(data: Any, channels: Collection[str] | None = None) -> Profile
                 s.action in ("set", "ramp", "off") for s in segments
             ):
                 error(path, "never sets a value", "add a set, a ramp or an off step")
+            if limits is not None and channel in limits:
+                _check_range(segments, path, limits[channel], error)
             timelines[channel] = segments
 
     profile = Profile(name.strip(), notes, timelines)
@@ -204,6 +217,23 @@ def parse_profile(data: Any, channels: Collection[str] | None = None) -> Profile
     if problems:
         raise ProfileError(problems)
     return profile
+
+
+def _check_range(
+    segments: tuple[Segment, ...], path: str, limits: tuple[float, float], error: Any
+) -> None:
+    low, high = limits
+    for s in segments:
+        if s.action not in ("set", "ramp"):
+            continue
+        for v in (s.start_value, s.end_value):
+            if isinstance(v, float) and not low <= v <= high:
+                error(
+                    f"{path}[{s.step}]",
+                    f"{v:g} is outside what the channel takes, {low:g} to {high:g}",
+                    "the channel's range comes from the config",
+                )
+                break
 
 
 def _steps(steps: Any, path: str, error: Any) -> tuple[Segment, ...] | None:
