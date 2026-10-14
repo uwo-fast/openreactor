@@ -281,14 +281,172 @@ class FakeRlht:
         return (frame + b"\xff" * count)[:count]
 
 
+# DCMT opcodes, written out for the same reason.
+DCMT_SET_OPEN_LOOP = 0x01
+DCMT_SET_BRAKE = 0x02
+DCMT_SET_MODE = 0x03
+DCMT_SET_SETPOINT = 0x04
+CLEAR_WATCHDOG_TRIP = 0x7C
+
+
+class FakeDcmt:
+    """A DCMT slice as its firmware (Slice_DCMT 44966b3) behaves.
+
+    SET_OPEN_LOOP takes effect only in open loop; a braked motor's PWM is
+    held at 0. With ``latches`` (the default, as that firmware advertises),
+    a watchdog trip brakes both motors and holds until CLEAR_WATCHDOG_TRIP:
+    meanwhile commands that could move a motor are ignored, and
+    SET_WATCHDOG re-arms without clearing. Without it, any command frame
+    clears a trip. ``commands`` records each SET as (opcode, payload).
+    """
+
+    def __init__(
+        self,
+        *,
+        type_id: int = 0x02,
+        crumbs_version: int = 1205,
+        module: tuple[int, int, int] = (1, 0, 0),
+        caps: int = 0x77,  # open loop, brakes, position, PID, watchdog, clear
+        latches: bool = True,
+    ):
+        self.type_id = type_id
+        self.crumbs_version = crumbs_version
+        self.module = module
+        self.caps = caps
+        self.latches = latches
+        self.staged = GET_VERSION
+        self.commands: list[tuple[int, bytes]] = []
+        self.armed = 0
+        self.timeout_ms = 0
+        self.tripped = 0
+        self.trip_count = 0
+        self.mode = 0
+        self.pwm = [0, 0]
+        self.brakes = [0, 0]
+        self.estop = 0
+        self.faults: list[str | OSError] = []
+        self.fail_opcodes: dict[int, BaseException] = {}
+        self.state_replies = 0
+
+    def _settle(self) -> None:
+        # motorControlLogic: a braked motor runs at PWM 0, and a trip zeroes
+        # both. While the e-stop is held it returns before that, so a PWM
+        # sent meanwhile is stored and runs once the e-stop is released.
+        if self.estop:
+            return
+        for m in (0, 1):
+            if self.brakes[m] or self.tripped:
+                self.pwm[m] = 0
+
+    def write(self, frame: bytes) -> None:
+        message = decode(frame)
+        if self.faults and isinstance(self.faults[0], OSError):
+            fault = self.faults.pop(0)
+            assert isinstance(fault, OSError)
+            raise fault
+        if message.opcode in self.fail_opcodes:
+            raise self.fail_opcodes[message.opcode]
+        if message.opcode == SET_REPLY:
+            self.staged = message.data[0]
+            return
+        op, data = message.opcode, bytes(message.data)
+        self.commands.append((op, data))
+        if not self.latches:
+            self.tripped = 0
+        held = bool(self.tripped)
+        if op == SET_WATCHDOG:
+            self.timeout_ms = int.from_bytes(data[:2], "little")
+            self.armed = 1 if self.timeout_ms else 0
+        elif op == CLEAR_WATCHDOG_TRIP and self.latches and not data:
+            self.tripped = 0
+        elif op == DCMT_SET_BRAKE:
+            for m in (0, 1):
+                if data[m]:
+                    self.brakes[m] = 1
+                elif not held:
+                    self.brakes[m] = 0
+        elif op == DCMT_SET_MODE and not held:
+            self.mode = data[0]
+            if self.mode != 0:
+                self.pwm = [0, 0]
+        elif op == DCMT_SET_OPEN_LOOP and not held and self.mode == 0:
+            self.pwm = [
+                max(-255, min(255, int.from_bytes(data[i : i + 2], "little", signed=True)))
+                for i in (0, 2)
+            ]
+        self._settle()
+
+    def trip(self) -> None:
+        """The command watchdog expiring, as watchdogLogic() does it."""
+        self.tripped = 1
+        self.trip_count = (self.trip_count + 1) % 256
+        self.brakes = [1, 1]
+        self._settle()
+
+    def reboot(self) -> None:
+        """A power-cycle: open loop, brakes off, the watchdog disarmed."""
+        self.armed = 0
+        self.timeout_ms = 0
+        self.tripped = 0
+        self.trip_count = 0
+        self.mode = 0
+        self.pwm = [0, 0]
+        self.brakes = [0, 0]
+
+    def press_estop(self) -> None:
+        """processEStop: the e-stop zeroes both PWMs when it is pressed."""
+        self.estop = 1
+        self.pwm = [0, 0]
+
+    def release_estop(self) -> None:
+        self.estop = 0
+        self._settle()
+
+    def reply(self) -> bytes:
+        op = self.staged
+        if op == GET_VERSION:
+            return struct.pack("<HBBB", self.crumbs_version, *self.module)
+        if op == GET_CAPS:
+            return struct.pack("<BBI", 1, 2, self.caps)
+        if op == GET_WATCHDOG:
+            return struct.pack("<BHBB", self.armed, self.timeout_ms, self.tripped, self.trip_count)
+        if op == GET_STATE:
+            invalid = -32768
+            return struct.pack(
+                "<BhhhhhhhhBB",
+                self.mode,
+                *self.pwm,
+                invalid,
+                invalid,
+                0,
+                0,
+                invalid,
+                invalid,
+                self.brakes[0] | self.brakes[1] << 1,
+                self.estop,
+            )
+        return b""
+
+    def read(self, count: int) -> bytes:
+        if self.faults:
+            fault = self.faults.pop(0)
+            if isinstance(fault, OSError):
+                raise fault
+            return b"\xff" * count
+        if self.staged == GET_STATE:
+            self.state_replies += 1
+        frame = encode(Message(self.type_id, self.staged, self.reply()))
+        return (frame + b"\xff" * count)[:count]
+
+
 class FakeI2cBus:
     """A crumbs_i2c Bus holding fake slices by address."""
 
-    def __init__(self, devices: dict[int, FakeRlht] | None = None):
+    def __init__(self, devices: dict[int, FakeRlht | FakeDcmt] | None = None):
         self.devices = devices or {}
         self.closed = False
 
-    def _device(self, address: int) -> FakeRlht:
+    def _device(self, address: int) -> FakeRlht | FakeDcmt:
         if address not in self.devices:
             raise OSError(errno.ENXIO, "No such device or address")
         return self.devices[address]
