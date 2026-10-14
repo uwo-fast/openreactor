@@ -427,7 +427,7 @@ class _Parser:
             if name_ok:
                 result.append(channel)
         if kind == "rlht" and tuned:
-            self.gains_on_both_outputs(path, tuned, len(t), set(used))
+            self.gains_on_every_channel(path, tuned, len(t))
         return tuple(result)
 
     def channel(
@@ -495,16 +495,17 @@ class _Parser:
             return None
         return max_setpoint
 
-    def gains_on_both_outputs(
-        self, path: str, tuned: list[str], channel_count: int, outputs: set[int]
-    ) -> None:
+    def gains_on_every_channel(self, path: str, tuned: list[str], channel_count: int) -> None:
         # SET_PID sets both outputs' gains at once, and the slice cannot
-        # report its current ones, so the config gives all six or none.
-        if len(tuned) != channel_count or outputs != {1, 2}:
+        # report its current ones. An output with no channel gets the other
+        # output's gains, but one with a channel gets only the gains the
+        # config gives it.
+        if len(tuned) != channel_count:
             self.error(
                 path,
-                "gains (kp, ki, kd) must be set on a channel for each of the slice's two "
-                "outputs, or on none: the slice sets both outputs' gains at once",
+                "gains (kp, ki, kd) must be set on every channel or on none: the slice "
+                "sets both outputs' gains at once, and an output with no channel gets the "
+                "other output's gains",
             )
 
     def gains(self, ch: dict[str, Any], path: str) -> tuple[float, float, float] | None:
