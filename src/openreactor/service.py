@@ -40,7 +40,7 @@ from openreactor.ezo import (
 )
 from openreactor.lock import LOCK_PATH, ControllerLock
 from openreactor.rlht import SendFailed, SliceBusy, SliceError, SliceStatus
-from openreactor.slices import Slice, opened_slices
+from openreactor.slices import Slice, opened_slices, release
 from openreactor.storage import Recorder, Run, StorageError, Store, default_path
 
 _T = TypeVar("_T")
@@ -608,6 +608,9 @@ def running(
                     yield service
                 finally:
                     service.close()
+                    # Only once the controller stopped: if closing it timed
+                    # out, the DCMT watchdogs stay armed and trip.
+                    release(slices)
         finally:
             for ch in channels:
                 ch.port.close()

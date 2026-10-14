@@ -217,6 +217,64 @@ def test_clear_trip_is_refused_with_nothing_held_or_on_another_device(open_bench
     assert bench.dcmt.commands[-1][0] != 0x7C
 
 
+def test_a_duty_is_refused_through_the_api_while_the_e_stop_is_held(open_bench):
+    bench, client = open_bench
+    bench.dcmt.press_estop()
+    until(lambda: client.get("/api/v1/status").json()["dcmt_slices"][0]["estop"])
+    r = client.put("/api/v1/channels/stirrer/setpoint", json={"value": 50})
+    assert r.status_code == 409 and "e-stop" in r.json()["detail"]
+    assert bench.dcmt.pwm == [0, 0]
+
+
+def test_clear_trip_answers_502_when_the_send_fails(open_bench):
+    bench, client = open_bench
+    bench.dcmt.trip()
+    until(lambda: held(client))
+    bench.dcmt.fail_opcodes[0x7C] = OSError(5, "I/O error")
+    r = client.post("/api/v1/devices/motors/clear-trip")
+    assert r.status_code == 502 and "may or may not be cleared" in r.json()["detail"]
+    assert bench.dcmt.tripped == 1
+
+
+def test_clear_trip_answers_503_for_a_dcmt_that_did_not_start(tmp_path: Path):
+    bench = Bench(tmp_path, password=False)
+    bench.dcmt.caps = 0x74  # no open loop or brakes: refused at start-up
+    with TestClient(bench.app, base_url=LOCAL) as client:
+        r = client.post("/api/v1/devices/motors/clear-trip")
+        assert r.status_code == 503 and "did not finish start-up" in r.json()["detail"]
+        [s] = client.get("/api/v1/status").json()["dcmt_slices"]
+        assert "lack open-loop control or brakes" in s["state"]
+        assert s["desired_pct"] is None
+
+
+def test_a_cross_site_clear_trip_is_refused(open_bench):
+    bench, client = open_bench
+    bench.dcmt.trip()
+    until(lambda: held(client))
+    evil = {"Origin": "http://evil.example"}
+    assert client.post("/api/v1/devices/motors/clear-trip", headers=evil).status_code == 403
+    hx = {"HX-Request": "true", **evil}
+    assert client.post("/ui/devices/motors/clear-trip", headers=hx).status_code == 403
+    assert bench.dcmt.tripped == 1
+
+
+def test_no_release_when_the_controller_does_not_stop_in_time(tmp_path: Path):
+    """A controller still running could drive a motor after its watchdog
+    was disarmed: leave the watchdog armed, to trip and brake it."""
+    bench = Bench(tmp_path, password=False)
+    with pytest.raises(TimeoutError), TestClient(bench.app, base_url=LOCAL):
+        svc = bench.app.state.service
+        close = svc.controller.close
+
+        def stuck() -> None:
+            close()  # stop it for real, then report the timeout
+            raise TimeoutError("the controller did not stop in time")
+
+        svc.controller.close = stuck
+    assert bench.dcmt.armed == 1
+    assert (0x7E, b"\x00\x00") not in bench.dcmt.commands
+
+
 def test_a_clean_shutdown_releases_the_dcmt(tmp_path: Path):
     bench = Bench(tmp_path, password=False)
     with TestClient(bench.app, base_url=LOCAL) as client:

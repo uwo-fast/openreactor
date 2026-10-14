@@ -46,7 +46,7 @@ from openreactor.ezo import (
 from openreactor.lock import LOCK_PATH, ControllerLock, LockHeld, live_holder
 from openreactor.profile import ProfileError, load_profile, timeline
 from openreactor.profile import clock as profile_clock
-from openreactor.slices import opened_slices
+from openreactor.slices import opened_slices, release
 from openreactor.storage import Recorder, StorageError, Store, default_path
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ def open_port(device: DeviceConfig) -> EzoPort:
 
 
 def actuators(config: Config) -> list[Actuator]:
-    """Return the outputs stop-all makes safe, other than the RLHT slices.
+    """Return the outputs stop-all makes safe, other than the slices.
 
     The slices add themselves. Tests replace this with fakes.
     """
@@ -215,8 +215,8 @@ def _controller(
 ) -> Iterator[tuple[Controller, list[Result | Event]]]:
     """Take the lock, open and check the devices, and yield a controller.
 
-    The EZO circuits are always opened; the RLHT slices are started only
-    with ``with_slices``. The controller comes with the start-up problems
+    The EZO circuits are always opened; the slices are started only with
+    ``with_slices``. The controller comes with the start-up problems
     and events. On the way out, even on Ctrl-C or SIGTERM, stop-all is sent
     before anything is closed.
     """
@@ -253,6 +253,7 @@ def _controller(
                     yield controller, problems
                 finally:
                     controller.close()
+                    release(slices)
         finally:
             for ch in channels:
                 ch.port.close()
@@ -607,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     serving.add_argument("--port", type=int, help="the port to bind (default server.port)")
     serving.set_defaults(func=_serve)
 
-    status = commands.add_parser("status", help="show each RLHT slice's state")
+    status = commands.add_parser("status", help="show each slice's state")
     status.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=config_help)
     status.add_argument(
         "--url", help="a running server's status URL (default: from the config's [server])"
@@ -661,7 +662,7 @@ def _status_url(config: Config) -> str:
 
 
 def _status(args: argparse.Namespace) -> int:
-    """Print each RLHT slice's state as the running server reports it.
+    """Print each slice's state as the running server reports it.
 
     With no server it reads nothing from the bus. Every reply a slice builds
     feeds its watchdog, so reading a slice after openreactor stopped would

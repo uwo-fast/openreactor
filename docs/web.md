@@ -41,7 +41,7 @@ sign-in as the UI. The OpenAPI description is at `/api/v1/openapi.json`.
 | `GET` | `/status` | The version, the current run, each device's status, each RLHT slice in detail under `slices`, and each DCMT under `dcmt_slices`. |
 | `GET` | `/channels` | The latest value of every channel. |
 | `PUT` | `/channels/{channel}/setpoint` | Set an RLHT channel's setpoint in °C, or a DCMT motor's duty in %. The body is `{"value": 40}`. |
-| `POST` | `/devices/{device}/clear-trip` | Clear a DCMT's held watchdog trip. Its motors stay stopped. Answers with the event. |
+| `POST` | `/devices/{device}/clear-trip` | Clear a DCMT's held watchdog trip. Its motors stay stopped. Answers with the event; 404 for a device that is not a DCMT, 409 when no trip is held, 502 when the send fails, 503 when the slice is not in use. |
 | `POST` | `/stop-all` | Send stop-all, and return one event per slice. |
 | `GET` | `/runs` | List the recorded runs. |
 | `POST` | `/runs` | Start a run. The body is `{"name": "...", "notes": "..."}`; `notes` is optional. Answers 201 with the run's `id`. |
@@ -88,7 +88,8 @@ After a plain watchdog trip, openreactor sends the setpoint again.
 
 A DCMT motor's setpoint is its duty, from -100 to 100 %: negative runs it in
 reverse, and 0 brakes it. The slice works in PWM steps of 1/255, so
-openreactor rounds the duty to the nearest step (50 % runs as 50.2 %).
+openreactor rounds the duty to the nearest step (50 % runs as 50.2 %), and a
+duty under 0.2 % rounds to 0 and brakes the motor.
 
 Before it sends a duty, openreactor reads the slice. The slice takes both
 motors' duties in one command, so if the slice rebooted or its e-stop was

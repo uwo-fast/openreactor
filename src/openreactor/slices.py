@@ -25,6 +25,23 @@ def _open_linux_bus(path: str) -> Bus:
     return LinuxBus(path)
 
 
+def release(slices: Sequence[Slice]) -> None:
+    """Release each started DCMT at a clean shutdown: safe state, then its
+    watchdog disarmed, so a latching slice is not left to trip.
+
+    Call it only once the controller has stopped and stop-all has been
+    sent: a controller still running could drive a motor after its
+    watchdog was disarmed. A slice that fails keeps its watchdog armed,
+    which trips and brakes it.
+    """
+    for s in slices:
+        if isinstance(s, DcmtSlice) and s.started:
+            try:
+                s.release()
+            except (CrumbsError, OSError) as e:
+                log.warning("%s: not released at shutdown: %s", s.name, _describe(e))
+
+
 @contextmanager
 def opened_slices(
     devices: Sequence[DeviceConfig],
@@ -41,9 +58,8 @@ def opened_slices(
     Slices on the same bus path share one bus. Yield every slice that
     answered as its kind, so stop-all covers it whether or not its start-up
     finished (``started`` says which to poll), with the start-up events and
-    problems. Send stop-all before leaving: on the way out each started DCMT
-    is released (safe state, then its watchdog disarmed), then the buses
-    close.
+    problems. The buses close on exit: send stop-all before that, then
+    ``release`` the slices once nothing else drives them.
     """
     buses: dict[str, Bus] = {}
     slices: list[Slice] = []
@@ -84,13 +100,6 @@ def opened_slices(
                 reports.append(Result(d.name, Outcome.ERROR, detail=_describe(e)))
         yield slices, reports
     finally:
-        for s in slices:
-            if isinstance(s, DcmtSlice) and s.started:
-                try:
-                    s.release()
-                except (CrumbsError, OSError) as e:
-                    # Its watchdog stays armed and will trip, which brakes it.
-                    log.warning("%s: not released at shutdown: %s", s.name, _describe(e))
         for bus in buses.values():
             close = getattr(bus, "close", None)
             if close is not None:

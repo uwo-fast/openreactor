@@ -82,10 +82,11 @@ UTC, and name.
 
 ## Slice status
 
-`openreactor status` shows each RLHT slice: its firmware, state, watchdog,
-e-stop, mode, and each output's temperature, setpoint, duty and
-thermocouple. When the slice runs a setpoint other than the one openreactor
-wants, the line shows the wanted one too.
+`openreactor status` shows each slice: its firmware, state, watchdog,
+e-stop and mode. For an RLHT, each output's temperature, setpoint, duty and
+thermocouple; for a DCMT, each motor's duty and whether it is braked. When
+the slice runs a setpoint or duty other than the one openreactor wants, the
+line shows the wanted one too.
 
 `status` asks the running server, at the configuration's `[server]` address
 or at `--url`. It sends the password from `OPENREACTOR_PASSWORD`. Without

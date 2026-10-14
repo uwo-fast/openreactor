@@ -132,10 +132,13 @@ RLHT's in one way: a motor never resumes on its own.
   watchdog, e-stop, PWM, brakes and mode are as openreactor left them. The
   slice takes both motors' PWM in one command, so this keeps a duty for one
   motor from restarting the other after a reboot or e-stop no poll has seen.
-- **E-stop, trip, reboot, a watchdog timeout changed on the slice, or a
-  PWM, brake or mode openreactor did not send:** both motors stay stopped
-  until you set a duty again. openreactor sends the safe state, arms the
-  watchdog again, and logs the event.
+- **E-stop:** as for an RLHT, openreactor logs the event, sends stop-all,
+  and sends the safe state at each poll while the e-stop is held. After the
+  release, both motors stay stopped until you set a duty again.
+- **Trip, reboot, a watchdog timeout changed on the slice, or a PWM, brake
+  or mode openreactor did not send:** openreactor logs the event, sends the
+  safe state and arms the watchdog again. Both motors stay stopped until you
+  set a duty again.
 - **A trip that latches.** Slice_DCMT firmware with
   `DCMT_CAP_CLEAR_WATCHDOG_TRIP` holds its motors braked after a trip until
   the trip is cleared. openreactor logs `slice-trip` `held` and refuses
@@ -143,11 +146,12 @@ RLHT's in one way: a motor never resumes on its own.
   page or `POST /api/v1/devices/{device}/clear-trip`. The motors stay
   stopped after the clear. A trip already held when openreactor starts is
   left held the same way.
-- **A clean shutdown** sends the safe state, then disarms the watchdog, so
-  a latching slice is not left to trip once nothing polls it. If the safe
-  state fails, the watchdog stays armed and trips. If openreactor is
-  killed, the watchdog trips, and the trip is held at the next start until
-  you clear it.
+- **A clean shutdown** sends stop-all, and once the controller has stopped,
+  the safe state again and then disarms the watchdog, so a latching slice is
+  not left to trip once nothing polls it. If either step fails, or the
+  controller does not stop in time, the watchdog stays armed and trips. If
+  openreactor is killed, the watchdog trips, and the trip is held at the
+  next start until you clear it.
 
 ## Known limitations
 

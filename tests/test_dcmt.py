@@ -17,6 +17,7 @@ from openreactor.controller import Controller
 from openreactor.dcmt import DcmtSlice, duty_to_pwm, pwm_to_duty
 from openreactor.ezo import EzoReader, Outcome, Result
 from openreactor.rlht import CrumbsPort, SendFailed, SliceBusy, SliceError
+from openreactor.slices import release
 
 STIRRER = ChannelConfig(name="stirrer", label="Stirrer", output=1)
 PUMP = ChannelConfig(name="pump", label="Pump", output=2)
@@ -553,6 +554,18 @@ def test_release_leaves_a_held_slice_armed():
     assert s.held
     s.release()
     assert (dcmt.armed, dcmt.tripped) == (1, 1)
+
+
+def test_release_all_goes_on_past_a_slice_that_fails_and_skips_one_not_started(caplog):
+    failing, good, not_started = FakeDcmt(), FakeDcmt(), FakeDcmt()
+    a, _ = started(failing)
+    b, _ = started(good)
+    c, _ = made(not_started)
+    failing.fail_opcodes[DCMT_SET_BRAKE] = OSError(5, "I/O error")
+    release([a, b, c])
+    assert failing.armed == 1 and good.armed == 0
+    assert not_started.commands == []
+    assert "motors: not released at shutdown" in caplog.text
 
 
 def test_release_keeps_the_watchdog_armed_if_the_safe_state_fails():
