@@ -123,8 +123,12 @@ The gains follow the slice's limits:
 - Each gain is 0 to 25.5, in steps of 0.1.
 - `ki` must be above 0. With `ki = 0` the slice's PID keeps its integral, and
   a heater can stay on after its setpoint goes to 0.
-- The slice takes both outputs' gains in one command, so you set gains on a
-  channel for each of the two outputs, or on none.
+- The slice takes both outputs' gains in one command, so you set gains on
+  every channel of the device, or on none.
+- An output with no channel gets the other output's gains. A gen1 RLHT has
+  one relay, so its one channel can set gains. The copy keeps `ki` above 0
+  on both outputs, for the reason above. openreactor never sets a setpoint
+  on an output with no channel.
 
 `max_setpoint` must be above 0 and at most 3276.7 °C, the highest setpoint
 the slice takes. Without it, the API accepts up to 3276.7 °C.

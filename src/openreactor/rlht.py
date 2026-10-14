@@ -373,9 +373,9 @@ class RlhtSlice:
         The order is closed-loop mode, the desired setpoints (only with
         ``setpoints``, for a re-assert, and zero while an e-stop is held),
         periods, thermocouple select, then gains. Periods go only if the
-        config sets one, and gains only if it sets all three for both
-        outputs. An output with no channel keeps the slice's thermocouple
-        and period.
+        config sets one, and gains only if it sets them. An output with no
+        channel keeps the slice's thermocouple and period, and gets the
+        other output's gains.
         """
         flags = self.caps.flags if self.caps else 0
         by_output = {ch.output: ch for ch in self.device.channels}
@@ -393,16 +393,22 @@ class RlhtSlice:
             tc1 = _setting(by_output, 1, "tc", state.tc1)
             tc2 = _setting(by_output, 2, "tc", state.tc2)
             self.port.send(RLHT_OP_SET_TC_SELECT, rlht_send_set_tc_select(tc1, tc2))
-        gains = [by_output[o] for o in (1, 2) if o in by_output]
         if (
             flags & RLHT_CAP_PID_TUNING
-            and len(gains) == 2
-            and all(ch.kp is not None and ch.ki is not None and ch.kd is not None for ch in gains)
+            and by_output
+            and all(
+                ch.kp is not None and ch.ki is not None and ch.kd is not None
+                for ch in by_output.values()
+            )
         ):
             # SET_PID carries both outputs' gains, and the slice cannot report
-            # its current ones, so a missing gain has no value to fill in.
-            # check-config refuses a partial set.
-            x10 = [round(g * 10) for ch in gains for g in (ch.kp, ch.ki, ch.kd) if g is not None]
+            # its current ones. An output with no channel gets the other
+            # output's gains rather than 0: with ki = 0, firmware without
+            # feastorg/Slice_RLHT#13 keeps a stale integral, where a ki above
+            # 0 lets it unwind to off at a setpoint of 0. check-config refuses
+            # gains on some channels and not others.
+            pair = [by_output.get(o) or by_output[3 - o] for o in (1, 2)]
+            x10 = [round(g * 10) for ch in pair for g in (ch.kp, ch.ki, ch.kd) if g is not None]
             self.port.send(RLHT_OP_SET_PID, rlht_send_set_pid_x10(*x10))
 
     # Stop-all
