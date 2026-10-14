@@ -29,7 +29,26 @@ systemd unit ([#29](https://github.com/uwo-fast/openreactor/issues/29)).
 For a stable install, use
 [v1.2.1](https://github.com/uwo-fast/openreactor/releases/tag/v1.2.1); the
 [`1.x` branch](https://github.com/uwo-fast/openreactor/tree/1.x) has its setup
-and usage instructions.
+and usage instructions. It takes fixes for reported bugs only. GitHub closes
+an issue from `Closes #N` only on a merge into `main`, so an issue fixed in
+`1.x` is closed by hand. Until 2.0.0 is released, `pip install openreactor`
+without a version installs the alpha, because 2.0.0a1 is the only version on
+PyPI.
+
+## Scope
+
+openreactor 2.0 supervises one bench-top vessel per instance, with every
+device listed in the configuration file. It does not include:
+
+- plugins or user scripts that drive the hardware
+  ([#78](https://github.com/uwo-fast/openreactor/issues/78) collects ideas
+  for experiment logic after 2.0);
+- device discovery;
+- a simulator;
+- shredding or other mechanical processing;
+- migrating 1.x data.
+
+Host control loops fed by EZO readings, such as dosing, are planned for 2.1.
 
 ## Hardware
 
