@@ -245,6 +245,21 @@ def test_a_duty_is_refused_while_another_controller_drives_the_slice():
     assert dcmt.pwm == [0, 0]
 
 
+def test_a_duty_on_every_tick_does_not_starve_the_poll():
+    dcmt = FakeDcmt()
+    s, clock = started(dcmt)
+    c, seen = controller_for(s, clock)
+    checks: list = []
+    supervise = s._supervise
+    s._supervise = lambda w: checks.append(w) or supervise(w)  # type: ignore[method-assign]
+    for i in range(100):  # ten seconds, a duty on every tick
+        s.set_duty(1, 100 + i % 2)
+        c.step()
+        clock.now = round(clock.now + 0.1, 9)
+    polls = [r for r in seen if isinstance(r, Result) and r.channel == "stirrer"]
+    assert len(polls) >= 9 and len(checks) >= 1
+
+
 def test_a_failed_send_keeps_the_desired_duty():
     dcmt = FakeDcmt()
     s, _ = started(dcmt)

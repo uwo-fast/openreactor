@@ -395,16 +395,21 @@ class DcmtSlice:
         Otherwise a check is owed, which the next poll runs, and the caller
         waits for it.
         """
+        # Each query stages its own reply over the one the poll staged. The
+        # slice builds a reply when it is read, so ending with the query the
+        # poll staged leaves it reading a fresh reply of the kind it expects,
+        # however often duties are sent.
+        watchdog_last = self._staged and self._phase == "watchdog"
         watchdog: BreadWatchdogResult | None = None
         try:
-            if self.protected:
+            if self.protected and not watchdog_last:
                 watchdog = bread_watchdog_parse_payload(self.port.query(BREAD_OP_GET_WATCHDOG))
             state = dcmt_parse_state_payload(self.port.query(DCMT_OP_GET_STATE))
+            if watchdog_last:
+                watchdog = bread_watchdog_parse_payload(self.port.query(BREAD_OP_GET_WATCHDOG))
         except (CrumbsError, OSError, ValueError) as e:
+            self._staged = False  # what the slice has staged is unknown: stage again
             raise SliceError(f"{self.name}: could not read the slice: {_describe(e)}") from e
-        finally:
-            # The queries replaced whatever reply the poll had staged.
-            self._staged = False
         changed = bool(state.estop) or self._drift(state)
         if watchdog is not None:
             # A disarmed watchdog reports a timeout of 0, so the timeout
