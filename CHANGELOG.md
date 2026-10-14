@@ -56,6 +56,8 @@ database, and new device protocols. 1.x is maintained on the `1.x` branch.
   without one is read-only unless `allow_unprotected` is set.
 - RLHT closed-loop mode, thermocouples, periods and gains set at start-up,
   with new optional `kp`, `ki`, `kd` and `period_ms` per channel.
+- PID gains on an RLHT with one channel, as on a gen1 board with one relay.
+  The output with no channel gets the same `kp`, `ki` and `kd`.
 - RLHT polling every `slice_poll_s`, which feeds the watchdog and records
   each channel's temperature, setpoint and duty.
 - Stop-all sends both stop commands to every RLHT slice.

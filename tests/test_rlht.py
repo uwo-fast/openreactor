@@ -162,20 +162,36 @@ def test_gains_go_only_when_the_config_gives_both_outputs():
     assert commands[SET_PID] == bytes((23, 1, 0, 10, 5, 2))
 
 
-def test_gains_on_one_output_are_never_filled_in():
-    """Both outputs' gains go in one command and cannot be read back: with
-    only one output's gains configured, none are sent, rather than zeros
-    that would freeze the other output's PID integral."""
+TUNED = ChannelConfig("jacket", "Jacket", output=1, tc=2, kp=2.3, ki=0.1, kd=0.0, period_ms=2000)
+
+
+def test_an_output_with_no_channel_gets_the_other_outputs_gains():
+    # A gen1 board has one relay, and SET_PID carries both outputs' gains.
+    # A copy keeps ki above 0, so a stale integral can unwind.
     rlht = FakeRlht()
-    tuned = ChannelConfig(
-        "jacket", "Jacket", output=1, tc=2, kp=2.3, ki=0.1, kd=0.0, period_ms=2000
-    )
-    started(rlht, device(tuned))
-    assert SET_PID not in ops(rlht)
-    # Output 2 has no channel: it keeps its thermocouple and period.
+    started(rlht, device(TUNED))
     commands = dict(rlht.commands)
+    assert commands[SET_PID] == bytes((23, 1, 0, 23, 1, 0))
+    # Output 2 has no channel: it keeps its thermocouple and period.
     assert commands[SET_TC] == bytes((2, 2))
     assert commands[SET_PERIODS] == struct.pack("<HH", 2000, 1000)
+
+
+def test_an_only_channel_on_output_2_gives_its_gains_to_output_1():
+    rlht = FakeRlht()
+    lid = ChannelConfig("lid", "Lid", output=2, tc=1, kp=1.0, ki=0.5, kd=0.2)
+    started(rlht, device(lid))
+    assert dict(rlht.commands)[SET_PID] == bytes((10, 5, 2, 10, 5, 2))
+
+
+def test_gains_on_one_of_two_channels_are_never_filled_in():
+    """Both outputs' gains go in one command and cannot be read back: a
+    channel without gains gets none sent, rather than zeros it never asked
+    for. check-config refuses this config."""
+    rlht = FakeRlht()
+    lid = ChannelConfig("lid", "Lid", output=2, tc=1)
+    started(rlht, device(TUNED, lid))
+    assert SET_PID not in ops(rlht)
 
 
 def test_a_control_the_slice_lacks_is_not_sent():
@@ -465,6 +481,22 @@ def test_a_trip_is_detected_from_the_trip_count_alone_and_re_asserted_in_order()
     assert dict(rlht.commands)[SET_SETPOINTS] == struct.pack("<hh", 370, 0)
     # The confirming check found it good: no second event.
     assert events(seen, "slice-trip") == [trip]
+
+
+def test_a_re_assert_sends_the_copied_gains_for_an_output_with_no_channel():
+    rlht = FakeRlht()
+    s, clock = started(rlht, device(TUNED))
+    c, seen = controller_for(s, clock)
+    rlht.trip_count += 1
+    rlht.commands.clear()
+    tick(c, clock, 6.0)
+    assert events(seen, "slice-trip")
+    assert dict(rlht.commands)[SET_PID] == bytes((23, 1, 0, 23, 1, 0))
+    rlht.reboot()
+    rlht.commands.clear()
+    tick(c, clock, 10.0)
+    assert events(seen, "slice-reboot")
+    assert dict(rlht.commands)[SET_PID] == bytes((23, 1, 0, 23, 1, 0))
 
 
 def test_a_tripped_flag_is_a_trip():
