@@ -106,8 +106,9 @@ the gains, and then the watchdog armed again. It never sends a setpoint above
 
 At the next watchdog read, openreactor checks that the state took. If it did
 not, it logs the event with the result `error: the re-assert did not take`,
-and tries again at the next scheduled watchdog read. If sending failed, it
-tries again after the next poll.
+and tries again at the next scheduled watchdog read, or at the next poll if
+a setpoint was refused meanwhile. If sending failed, it tries again after the
+next poll.
 
 ### Before a setpoint is sent
 
@@ -118,8 +119,10 @@ the other output's heater with the watchdog disarmed. So before it sends a
 setpoint, openreactor reads the slice's watchdog and state. Unless the
 watchdog has the configured timeout and no new trip, the e-stop is clear,
 and the setpoints are the ones it last sent, it refuses with 409 and checks
-the slice at its next poll. If the slice cannot be read, it refuses with
-503.
+the slice's watchdog at its next poll. A slice with no watchdog
+(`allow_unprotected`) has no watchdog to check: if its setpoints changed,
+the next poll sends it the safe state. If the slice cannot be read,
+openreactor refuses with 503.
 
 ### Setpoints that changed without a trip or reboot
 

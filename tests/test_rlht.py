@@ -1129,6 +1129,7 @@ def test_a_slice_without_a_watchdog_is_still_checked_for_drift():
     rlht.setpoints = [0, 0]
     with pytest.raises(SliceBusy):
         s.set_setpoint(1, 450)
+    assert not s._check_owed  # it has no watchdog to check
 
 
 def test_a_setpoint_on_every_tick_does_not_starve_the_poll():
@@ -1144,6 +1145,24 @@ def test_a_setpoint_on_every_tick_does_not_starve_the_poll():
         clock.now = round(clock.now + 0.1, 9)
     polls = [r for r in seen if isinstance(r, Result) and r.channel == "jacket"]
     assert len(polls) >= 9 and len(checks) >= 1
+
+
+def test_a_failed_check_before_a_send_makes_the_poll_stage_again():
+    """The check's own queries replace the reply the poll staged; after a
+    failed one, the poll stages again rather than read the wrong reply and
+    count a failed attempt."""
+    rlht = FakeRlht()
+    s, clock = started(rlht)
+    c, seen = controller_for(s, clock)
+    tick(c, clock, 3.0)
+    c.step()  # the next poll stages GET_STATE
+    assert s._staged
+    rlht.faults = [OSError(errno.EIO, "I/O error")] * 3
+    with pytest.raises(SliceError, match="could not read the slice"):
+        s.set_setpoint(1, 400)
+    assert not s._staged and s._attempts == 0
+    tick(c, clock, 1.0)
+    assert s._failed_polls == 0 and not events(seen, "slice-unreachable")
 
 
 def test_with_checks_failing_a_setpoint_is_refused_as_unreadable():

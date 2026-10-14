@@ -531,7 +531,7 @@ class RlhtSlice:
                 or watchdog.trip_count != self._trip_count
             )
         if changed:
-            self._check_owed = True
+            self._check_owed = self.protected
             raise SliceBusy(
                 f"{self.name} changed since it was last checked, and is being checked; "
                 "set the setpoint again in a moment"
