@@ -144,8 +144,11 @@ out each channel's value and sends the ones that changed.
 - A send that fails once, or finds the slice being checked, is tried again
   at the next step.
 - While a profile drives a channel, a setpoint for it by hand is refused.
-- When openreactor stops, the profile's run ends `interrupted`, and the
-  profile does not resume when it starts again.
+- When `serve` is stopped with Ctrl-C or SIGTERM, the stop-all it sends
+  first aborts the profile, so its run ends `stopped`
+  ([#92](https://github.com/uwo-fast/openreactor/issues/92) tracks ending it
+  `interrupted` instead). The profile does not resume when openreactor
+  starts again.
 
 ## EZO calibration
 
