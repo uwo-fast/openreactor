@@ -154,3 +154,9 @@ The workflow then:
 
 To try the same build without releasing, run the workflow by hand on `main`.
 It then publishes to TestPyPI instead.
+
+## Fixes on 1.x
+
+The [`1.x` branch](https://github.com/uwo-fast/openreactor/tree/1.x) takes
+fixes for reported bugs only. GitHub closes an issue from `Closes #N` only on
+a merge into `main`, so an issue fixed in `1.x` is closed by hand.
