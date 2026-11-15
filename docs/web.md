@@ -40,7 +40,7 @@ sign-in as the UI. The OpenAPI description is at `/api/v1/openapi.json`.
 |---|---|---|
 | `GET` | `/status` | The version, the current run, each device's status, each RLHT slice in detail under `slices`, and each DCMT under `dcmt_slices`. |
 | `GET` | `/channels` | The latest value of every channel. |
-| `PUT` | `/channels/{channel}/setpoint` | Set an RLHT channel's setpoint in °C, or a DCMT motor's duty in %. The body is `{"value": 40}`. |
+| `PUT` | `/channels/{channel}/setpoint` | Set an RLHT channel's setpoint in deg C, or a DCMT motor's duty in %. The body is `{"value": 40}`. |
 | `POST` | `/devices/{device}/clear-trip` | Clear a DCMT's held watchdog trip. Its motors stay stopped. Answers with the event; 404 for a device that is not a DCMT, 409 when no trip is held, 502 when the send fails, 503 when the slice is not in use. |
 | `POST` | `/stop-all` | Send stop-all, and return one event per slice. |
 | `GET` | `/runs` | List the recorded runs. |
@@ -68,10 +68,10 @@ The calibration points for each family are in
 
 ## Setpoints
 
-You set an RLHT channel's setpoint from the API or the Controls page, in °C.
-The slice works in tenths of a degree, so openreactor rounds the value to the
-nearest 0.1 °C. It accepts values from 0 up to the channel's `max_setpoint`,
-or up to 3276.7 °C when the configuration sets none.
+You set an RLHT channel's setpoint from the API or the Controls page, in
+deg C. The slice works in tenths of a degree, so openreactor rounds the value
+to the nearest 0.1 deg C. It accepts values from 0 up to the channel's
+`max_setpoint`, or up to 3276.7 deg C when the configuration sets none.
 
 openreactor sends the setpoint to the slice at once, and records it as an
 event in the run, whether the send worked or not.
@@ -93,8 +93,8 @@ After a plain watchdog trip, openreactor sends the setpoint again.
 profile runs. `POST /api/v1/profile` answers 422 with every problem the
 validator finds, including a value outside a channel's range, 409 while a
 run is recording or a slice it uses has its e-stop or a DCMT trip held, and
-503 when a slice the profile uses is not in use or is unreachable. A profile's TOML text can be up to 20,000 characters. For
-example:
+503 when a slice the profile uses is not in use or is unreachable. A
+profile's TOML text can be up to 20,000 characters. For example:
 
 ```sh
 python3 -c 'import json, sys; print(json.dumps({"profile": open(sys.argv[1]).read()}))' \

@@ -49,7 +49,7 @@ checked together:
 
 - `slice_poll_s` must be at least 0.2 s, because a poll takes two 0.1 s
   controller ticks.
-- `watchdog_timeout_ms` must be between 3 × `slice_poll_s` and 65535 ms.
+- `watchdog_timeout_ms` must be between 3 x `slice_poll_s` and 65535 ms.
   Three polls must fit inside it.
 
 `ezo_period_s` must be at least the slowest configured EZO read plus 0.2 s.
@@ -113,7 +113,7 @@ channels.jacket = { label = "Jacket heater", output = 1, tc = 1 }
 | `tc` | yes | The thermocouple the output's PID uses, 1 or 2. |
 | `period_ms` | no | The time-proportioning period, 100 to 10000 ms. |
 | `kp`, `ki`, `kd` | no | The PID gains, set together. |
-| `max_setpoint` | no | The highest setpoint the API and the UI accept, in °C. |
+| `max_setpoint` | no | The highest setpoint the API and the UI accept, in deg C. |
 
 openreactor sends `period_ms` and the gains only when the file sets them.
 Otherwise the slice keeps its own values.
@@ -130,8 +130,8 @@ The gains follow the slice's limits:
   on both outputs, for the reason above. openreactor never sets a setpoint
   on an output with no channel.
 
-`max_setpoint` must be above 0 and at most 3276.7 °C, the highest setpoint
-the slice takes. Without it, the API accepts up to 3276.7 °C.
+`max_setpoint` must be above 0 and at most 3276.7 deg C, the highest
+setpoint the slice takes. Without it, the API accepts up to 3276.7 deg C.
 
 A slice without a command watchdog stays read-only unless the device sets
 `allow_unprotected = true`. If openreactor stops or the Pi loses power, such

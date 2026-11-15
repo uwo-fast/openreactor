@@ -111,8 +111,8 @@ Each channel has a list of steps, which run in order from the start:
 | `{ off = true }` | Put the channel in its safe state. |
 
 Durations are a number and a unit, `s`, `m` or `h`, such as `"45s"`, `"2m"`
-or `"1.5h"`. An RLHT channel's values are °C, and a DCMT motor's are its
-duty in %.
+or `"1.5h"`. An RLHT channel's values are in deg C, and a DCMT motor's are
+its duty in %.
 [examples/profiles/ramp-and-hold.toml](../examples/profiles/ramp-and-hold.toml)
 uses every step.
 
@@ -159,9 +159,9 @@ Each family has its own calibration points:
 | pH | `mid`, then `low` and `high` | The pH of the reference solution. |
 | ORP | `ref` | The reference in mV. |
 | RTD | `ref` | The reference temperature. |
-| EC | `dry`, then `single`, or `low` and `high` | The reference in µS/cm; `dry` takes none. |
+| EC | `dry`, then `single`, or `low` and `high` | The reference in uS/cm; `dry` takes none. |
 | DO | `atmospheric` and `zero` | None. |
-| HUM | `temperature` | The reference in °C. |
+| HUM | `temperature` | The reference in deg C. |
 
 A pH `mid` calibration clears the `low` and `high` points, so calibrate `mid`
 first.
@@ -180,8 +180,8 @@ address is the family the configuration names, and stops if it is not.
 Calibrating the wrong circuit would corrupt its calibration.
 
 EC and DO circuits are first set back to their default compensation
-temperature, 25 °C for EC and 20 °C for DO, as their datasheets require. The
-next `read` sends the measured temperature again.
+temperature, 25 deg C for EC and 20 deg C for DO, as their datasheets
+require. The next `read` sends the measured temperature again.
 
 `openreactor ezo cal ph clear --yes` erases a circuit's calibration. Without
 `--yes`, it refuses.

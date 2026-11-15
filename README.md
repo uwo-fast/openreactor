@@ -111,7 +111,7 @@ openreactor was originally written by
 
 ## License
 
-Copyright © 2021–2026 the openreactor contributors. openreactor is licensed
+Copyright (c) 2021-2026 the openreactor contributors. openreactor is licensed
 under the GNU Affero General Public License, version 3 or any later version;
 see [LICENSE](LICENSE). The MOST Research Group first released it in 2021
 under GPL-2.0-only. In January 2025 the FAST Research Group reworked it and
