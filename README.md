@@ -3,7 +3,7 @@
 > Supervise benchtop lab reactors from a Raspberry Pi: temperature, mixing,
 > dosing and water chemistry, with recorded runs.
 
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://github.com/uwo-fast/openreactor/blob/main/LICENSE)
 [![Contributions welcome](https://img.shields.io/badge/Contributions-welcome-brightgreen.svg)](https://github.com/uwo-fast/.github/blob/main/CONTRIBUTING.md)
 
 openreactor runs batch and semi-batch reactors on the bench, for biology, wet
@@ -60,7 +60,8 @@ Every device is listed in the configuration file.
 ## Install and quick start
 
 [docs/install.md](docs/install.md) covers preparing the Pi and installing
-openreactor. Then copy [examples/openreactor.toml](examples/openreactor.toml),
+openreactor. Then copy
+[examples/openreactor.toml](https://github.com/uwo-fast/openreactor/blob/main/examples/openreactor.toml),
 keep the devices you have, check it, read the sensors once, and start the
 server:
 
@@ -85,7 +86,7 @@ heater.
 - [Development](docs/development.md): set up, test and release.
 - [Bench checklist](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md):
   the hardware checks before a release.
-- [Changelog](CHANGELOG.md)
+- [Changelog](https://github.com/uwo-fast/openreactor/blob/main/CHANGELOG.md)
 
 ## Development
 
@@ -100,7 +101,8 @@ Contributions are welcome. See the organization
 ## Citation
 
 If you use openreactor in your work, please cite it with the "Cite this
-repository" button on GitHub, or from [CITATION.cff](CITATION.cff).
+repository" button on GitHub, or from
+[CITATION.cff](https://github.com/uwo-fast/openreactor/blob/main/CITATION.cff).
 
 ## Acknowledgements
 
@@ -113,7 +115,8 @@ openreactor was originally written by
 
 Copyright (c) 2021-2026 the openreactor contributors. openreactor is licensed
 under the GNU Affero General Public License, version 3 or any later version;
-see [LICENSE](LICENSE). The MOST Research Group first released it in 2021
+see [LICENSE](https://github.com/uwo-fast/openreactor/blob/main/LICENSE).
+The MOST Research Group first released it in 2021
 under GPL-2.0-only. In January 2025 the FAST Research Group reworked it and
 relicensed it under the AGPL-3.0, so that improvements stay available to
 everyone who uses it.

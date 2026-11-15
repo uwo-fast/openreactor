@@ -2,8 +2,9 @@
 
 openreactor reads one TOML file that lists the server, the controller timing
 and every device. It discovers nothing: a device that is not in the file is
-not used. [examples/openreactor.toml](../examples/openreactor.toml) is the
-full reference, with a comment on every setting.
+not used.
+[examples/openreactor.toml](https://github.com/uwo-fast/openreactor/blob/main/examples/openreactor.toml)
+is the full reference, with a comment on every setting.
 
 The commands that use a configuration read `/etc/openreactor/openreactor.toml`
 unless you pass `-c FILE`. `profile validate` reads one only when you pass

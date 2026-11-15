@@ -116,8 +116,9 @@ The browser UI must work on a lab network with no internet, so the few
 third-party browser files it needs ship inside the package, under
 `src/openreactor/static/vendor/`.
 
-[vendor.toml](../src/openreactor/static/vendor/vendor.toml) lists every file:
-its package, exact version, licence, the URL it came from, and its SHA-256.
+[vendor.toml](https://github.com/uwo-fast/openreactor/blob/main/src/openreactor/static/vendor/vendor.toml)
+lists every file: its package, exact version, licence, the URL it came
+from, and its SHA-256.
 The UI's About page lists the same packages, read from that manifest. Each
 package's licence file sits beside it.
 
@@ -145,8 +146,9 @@ one of them.
 
 ## Releasing
 
-The [release workflow](../.github/workflows/release.yml) publishes to PyPI
-with Trusted Publishing, so no API token is stored.
+The
+[release workflow](https://github.com/uwo-fast/openreactor/blob/main/.github/workflows/release.yml)
+publishes to PyPI with Trusted Publishing, so no API token is stored.
 
 1. Run the hardware checks in
    [dev/bench.md](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md),

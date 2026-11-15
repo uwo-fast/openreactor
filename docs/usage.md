@@ -113,7 +113,7 @@ Each channel has a list of steps, which run in order from the start:
 Durations are a number and a unit, `s`, `m` or `h`, such as `"45s"`, `"2m"`
 or `"1.5h"`. An RLHT channel's values are in deg C, and a DCMT motor's are
 its duty in %.
-[examples/profiles/ramp-and-hold.toml](../examples/profiles/ramp-and-hold.toml)
+[examples/profiles/ramp-and-hold.toml](https://github.com/uwo-fast/openreactor/blob/main/examples/profiles/ramp-and-hold.toml)
 uses every step.
 
 Check a profile before you run it:
