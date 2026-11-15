@@ -75,7 +75,8 @@ flowchart TD
 
 The tests run against fake devices, so they need no hardware. They cannot
 show how the hardware behaves, so the hardware checks in
-[bench.md](bench.md) are run by hand before a release.
+[dev/bench.md](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md)
+are run by hand before a release.
 
 CI runs `just check` and `just test` on Python 3.11 and 3.13 for every pull
 request and every push to `main`.
@@ -135,7 +136,9 @@ one of them.
 The [release workflow](../.github/workflows/release.yml) publishes to PyPI
 with Trusted Publishing, so no API token is stored.
 
-1. Run the hardware checks in [bench.md](bench.md), and record the results.
+1. Run the hardware checks in
+   [dev/bench.md](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md),
+   and record the results.
 2. Set the version in `pyproject.toml`.
 3. Push a tag `vX.Y.Z` that matches the version in `pyproject.toml`.
 

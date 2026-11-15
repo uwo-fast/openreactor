@@ -83,7 +83,8 @@ heater.
 - [Browser UI and HTTP API](docs/web.md), and serving on the lab network.
 - [Safety](docs/safety.md): how openreactor keeps heaters safe.
 - [Development](docs/development.md): set up, test and release.
-- [Bench checklist](docs/bench.md): the hardware checks before a release.
+- [Bench checklist](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md):
+  the hardware checks before a release.
 - [Changelog](CHANGELOG.md)
 
 ## Development
