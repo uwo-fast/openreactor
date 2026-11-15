@@ -29,7 +29,7 @@ the openreactor and library versions, and the firmware commit on each slice.
 
 ## Before you start
 
-Prepare the Pi and install openreactor as [install.md](install.md)
+Prepare the Pi and install openreactor as [install.md](../docs/install.md)
 describes, with a configuration that lists the rig's devices.
 
 ## How to run the controller lock check

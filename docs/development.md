@@ -46,8 +46,17 @@ flowchart TD
     service -->|"commands"| controller["controller.py<br/>100 ms tick"]
     cli["cli.py<br/>read, run, ezo cal"] --> controller
     controller --> rlht["rlht.py<br/>RLHT slices"]
+    controller --> dcmt["dcmt.py<br/>DCMT slices"]
     controller --> ezo["ezo.py<br/>EZO circuits"]
+    service -->|"starts"| runner["runner.py<br/>profile runs"]
+    controller -->|"polls each tick"| runner
+    runner -->|"setpoints"| rlht
+    runner -->|"duties"| dcmt
+    runner --> profile["profile.py<br/>profile files"]
+    service --> profile
+    cli -->|"profile validate"| profile
     rlht -->|"crumbs-i2c"| bus[("I2C bus")]
+    dcmt -->|"crumbs-i2c"| bus
     ezo -->|"ezo-driver"| bus
     controller -->|"readings and events"| recorder["storage.py<br/>Recorder"]
     recorder --> db[("SQLite")]
@@ -64,6 +73,9 @@ flowchart TD
 - `serve` runs `web.py` and `ui.py` over `service.py`. The middleware in
   `security.py` sees every request first, and `errors.py` turns the errors
   an action can raise into HTTP statuses.
+- `profile.py` parses and checks a profile. To run one, `service.py` adds a
+  `ProfileRunner` from `runner.py` to the controller's polled devices, so it
+  sends the profile's setpoints and duties on the controller's thread.
 - `read`, `run` and `ezo cal` build a controller in `cli.py` and use it
   directly, without the service.
 - While a run records, the controller's thread is the database's only
@@ -75,7 +87,8 @@ flowchart TD
 
 The tests run against fake devices, so they need no hardware. They cannot
 show how the hardware behaves, so the hardware checks in
-[bench.md](bench.md) are run by hand before a release.
+[dev/bench.md](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md)
+are run by hand before a release.
 
 CI runs `just check` and `just test` on Python 3.11 and 3.13 for every pull
 request and every push to `main`.
@@ -103,8 +116,9 @@ The browser UI must work on a lab network with no internet, so the few
 third-party browser files it needs ship inside the package, under
 `src/openreactor/static/vendor/`.
 
-[vendor.toml](../src/openreactor/static/vendor/vendor.toml) lists every file:
-its package, exact version, licence, the URL it came from, and its SHA-256.
+[vendor.toml](https://github.com/uwo-fast/openreactor/blob/main/src/openreactor/static/vendor/vendor.toml)
+lists every file: its package, exact version, licence, the URL it came
+from, and its SHA-256.
 The UI's About page lists the same packages, read from that manifest. Each
 package's licence file sits beside it.
 
@@ -132,10 +146,13 @@ one of them.
 
 ## Releasing
 
-The [release workflow](../.github/workflows/release.yml) publishes to PyPI
-with Trusted Publishing, so no API token is stored.
+The
+[release workflow](https://github.com/uwo-fast/openreactor/blob/main/.github/workflows/release.yml)
+publishes to PyPI with Trusted Publishing, so no API token is stored.
 
-1. Run the hardware checks in [bench.md](bench.md), and record the results.
+1. Run the hardware checks in
+   [dev/bench.md](https://github.com/uwo-fast/openreactor/blob/main/dev/bench.md),
+   and record the results.
 2. Set the version in `pyproject.toml`.
 3. Push a tag `vX.Y.Z` that matches the version in `pyproject.toml`.
 
@@ -151,3 +168,9 @@ The workflow then:
 
 To try the same build without releasing, run the workflow by hand on `main`.
 It then publishes to TestPyPI instead.
+
+## Fixes on 1.x
+
+The [`1.x` branch](https://github.com/uwo-fast/openreactor/tree/1.x) takes
+fixes for reported bugs only. GitHub closes an issue from `Closes #N` only on
+a merge into `main`, so an issue fixed in `1.x` is closed by hand.
