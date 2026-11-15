@@ -46,8 +46,17 @@ flowchart TD
     service -->|"commands"| controller["controller.py<br/>100 ms tick"]
     cli["cli.py<br/>read, run, ezo cal"] --> controller
     controller --> rlht["rlht.py<br/>RLHT slices"]
+    controller --> dcmt["dcmt.py<br/>DCMT slices"]
     controller --> ezo["ezo.py<br/>EZO circuits"]
+    service -->|"starts"| runner["runner.py<br/>profile runs"]
+    controller -->|"polls each tick"| runner
+    runner -->|"setpoints"| rlht
+    runner -->|"duties"| dcmt
+    runner --> profile["profile.py<br/>profile files"]
+    service --> profile
+    cli -->|"profile validate"| profile
     rlht -->|"crumbs-i2c"| bus[("I2C bus")]
+    dcmt -->|"crumbs-i2c"| bus
     ezo -->|"ezo-driver"| bus
     controller -->|"readings and events"| recorder["storage.py<br/>Recorder"]
     recorder --> db[("SQLite")]
@@ -64,6 +73,9 @@ flowchart TD
 - `serve` runs `web.py` and `ui.py` over `service.py`. The middleware in
   `security.py` sees every request first, and `errors.py` turns the errors
   an action can raise into HTTP statuses.
+- `profile.py` parses and checks a profile. To run one, `service.py` adds a
+  `ProfileRunner` from `runner.py` to the controller's polled devices, so it
+  sends the profile's setpoints and duties on the controller's thread.
 - `read`, `run` and `ezo cal` build a controller in `cli.py` and use it
   directly, without the service.
 - While a run records, the controller's thread is the database's only
